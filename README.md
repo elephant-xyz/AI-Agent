@@ -1,4 +1,4 @@
-# Prototype Assessor (v1.0) — Playwright‑MCP Edition
+# AI-Agent
 
 > **Setup:**
 > ```bash
