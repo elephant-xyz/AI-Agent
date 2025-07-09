@@ -797,6 +797,19 @@ def fetch_schema_from_ipfs(cid):
     logger.error(f"Failed to fetch schema from IPFS CID {cid} from all gateways")
     return None
 
+def unescape_http_request(http_request):
+    """Decode escaped characters in HTTP request strings"""
+    if not http_request:
+        return None
+
+    # Replace common escape sequences
+    unescaped = http_request.replace('\\r\\n', '\r\n')
+    unescaped = unescaped.replace('\\r', '\r')
+    unescaped = unescaped.replace('\\n', '\n')
+    unescaped = unescaped.replace('\\"', '"')
+    unescaped = unescaped.replace('\\\\', '\\')
+
+    return unescaped
 
 def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
     """
@@ -909,7 +922,7 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
                                 # Check if this JSON has source_http_request field
                                 if 'source_http_request' in json_data:
                                     # Update the JSON data with seed information
-                                    json_data['source_http_request'] = seed_data[folder_name]['http_request']
+                                    json_data['source_http_request'] = unescape_http_request(seed_data[folder_name]['http_request'])
                                     json_data['request_identifier'] = str(seed_data[folder_name]['source_identifier'])
 
                                     # Write back to file
