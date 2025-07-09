@@ -413,13 +413,14 @@ class ExtractionGeneratorEvaluatorPair:
                     
         📝 RESPONSE FORMAT:
         Start with: STATUS: ACCEPTED or STATUS: REJECTED
-
+        Answer in a concise manner, focusing on the specific data completeness and accuracy issues found.
+        
         Then explain:
-        - Data completeness results
-        - Missing sales/tax years
-        - Incomplete person/company data
-        - Missing layout information
-        - Specific data extraction fixes needed
+        - Data completeness results only if the data is not complete.
+        - Missing sales/tax years only if found.
+        - Incomplete person/company data only if found.
+        - Missing layout information only if found.
+        - Specific data extraction fixes needed only if found.
 
         🗣️ CONVERSATION RULES:
         - You focus ONLY on data completeness and accuracy
@@ -944,13 +945,62 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
 
         logger.info("🔍 Running CLI validator: npx @elephant-xyz/cli validate-and-upload submit --dry-run")
 
-        result = subprocess.run(
-            ["npx", "@elephant-xyz/cli", "validate-and-upload", "submit", "--dry-run", "--output-csv", "results.csv"],
-            cwd=BASE_DIR,
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
+        # Check prerequisites before running CLI validator
+        logger.info("🔍 Checking CLI validator prerequisites...")
+
+        # Check if node/npm are available
+        try:
+            node_result = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=10)
+            npm_result = subprocess.run(["npm", "--version"], capture_output=True, text=True, timeout=10)
+            logger.info(f"Node.js version: {node_result.stdout.strip()}")
+            logger.info(f"npm version: {npm_result.stdout.strip()}")
+        except Exception as e:
+            logger.error(f"❌ Node.js/npm not available: {e}")
+
+        # Check if submit directory exists and has content
+        submit_dir = os.path.join(BASE_DIR, "submit")
+        if os.path.exists(submit_dir):
+            submit_contents = os.listdir(submit_dir)
+            logger.info(f"Submit directory contains {len(submit_contents)} items: {submit_contents[:5]}...")
+        else:
+            logger.error("❌ Submit directory not found!")
+
+        # Try to install/check CLI tool first
+        logger.info("🔍 Checking @elephant-xyz/cli availability...")
+        try:
+            cli_check = subprocess.run(
+                ["npx", "@elephant-xyz/cli", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            if cli_check.returncode == 0:
+                logger.info(f"✅ CLI tool available: {cli_check.stdout.strip()}")
+            else:
+                logger.warning(f"⚠️ CLI tool check failed: {cli_check.stderr}")
+        except subprocess.TimeoutExpired:
+            logger.error("❌ CLI tool check timed out - network issues?")
+        except Exception as e:
+            logger.error(f"❌ CLI tool check failed: {e}")
+
+        logger.info("🔍 Running CLI validator: npx @elephant-xyz/cli validate-and-upload submit --dry-run")
+
+        try:
+            result = subprocess.run(
+                ["npx", "@elephant-xyz/cli", "validate-and-upload", "submit", "--dry-run", "--output-csv",
+                 "results.csv"],
+                cwd=BASE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=300  # Keep original 5 minute timeout
+            )
+        except subprocess.TimeoutExpired as e:
+            logger.error("❌ CLI validator timed out after 5 minutes")
+            logger.error("This usually indicates:")
+            logger.error("  1. Network issues downloading @elephant-xyz/cli")
+            logger.error("  2. CLI tool hanging on invalid input")
+            logger.error("  3. Large submit directory taking too long to process")
+            raise
 
         # Check for submit_errors.csv file regardless of exit code
         submit_errors_path = os.path.join(BASE_DIR, "submit_errors.csv")
