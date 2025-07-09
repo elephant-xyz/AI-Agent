@@ -220,7 +220,7 @@ class ExtractionGeneratorEvaluatorPair:
             ./data/[property_parcel_id]/layout_1.json (It represents number of space_type inside the property) you need to know what space_type you have from the schema and apply them  if found in the property data
             ./data/[property_parcel_id]/flood_storm_information.json
             ./data/[property_parcel_id]/person.json   or ./data/[property_parcel_id]/company.json
-            you must be able to identify if the owner is a company or a person 
+            Script must be able to identify if the owner is a (company or organization name) or (a person) 
             and if multiple persons you should have 
             ./data/[property_parcel_id]/person_1.json
             ./data/[property_parcel_id]/person_2.json
@@ -402,7 +402,15 @@ class ExtractionGeneratorEvaluatorPair:
             7- Check that multiple layouts/sales/persons are properly numbered
             8- IF there is any TODO in the extraction script ask the generator to fix the script
             9- All relationships files are being filled correctly in the county_data_group.json file, and missing relationships are being represented as null
-
+            10- Generator should detect company or organization name and set it correctly in company class:
+                for example:
+                    - Common corporate/legal suffixes (e.g., Inc, LLC, Ltd)
+                    - Words used in nonprofit or charity names (e.g., Foundation, Alliance, Rescue)
+                    - Words associated with service providers, government contractors, training organizations, or professional associations (e.g., Solutions, Services, Systems)
+                    - Military, emergency services, and veteran-related terms (e.g., Veterans, First Responders, Heroes)
+                    - International or advocacy organizations (e.g., Initiative, Mission, Council)
+                    
+                    
         📝 RESPONSE FORMAT:
         Start with: STATUS: ACCEPTED or STATUS: REJECTED
 
