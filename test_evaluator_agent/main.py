@@ -1189,8 +1189,8 @@ async def run_two_node_workflow():
             args=["mcp_code_executor/build/index.js"],
             env={
                 "CODE_STORAGE_DIR": current_dir,
-                "ENV_TYPE": "venv",
-                "VENV_PATH": os.path.join(current_dir, ".venv")
+                "ENV_TYPE": "venv-uv",
+                "UV_VENV_PATH": os.path.join(current_dir, ".venv")
             },
             cwd=current_dir,
             encoding="utf-8",
