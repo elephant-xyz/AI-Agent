@@ -1,27 +1,59 @@
-# AI-Agent
+# Test Evaluator Agent
 
-> **Setup:**
-> ```bash
-> python3.11 -m venv .venv && source .venv/bin/activate
-> pip install -r requirements.txt
-> git clone https://github.com/bazinga012/mcp_code_executor.git
-> cd mcp_code_executor
-> npm install
-> cd ..
-> ```
+An AI-powered data extraction evaluator agent using LangGraph for property data processing.
 
----
+## Features
 
-Quick Start
+- Multi-agent conversation system for data extraction validation
+- Schema validation using JSON Schema
+- CLI validation integration
+- Address matching with fuzzy logic
+- Retry mechanism with configurable limits
+- IPFS schema fetching and caching
+
+## Installation
+
+You can run this tool directly using `uvx`:
 
 ```bash
+uvx --from git+https://github.com/StaircaseAPI/agentic_ai test-evaluator-agent
+```
 
-# Run the script
-$ export OPENAI_API_KEY="sk‑…"
-$ export GOOGLE_API_KEY="AIzaSy…"
-$ python main.py
-> ```
+## Usage
 
-> Create a new folder named ``html`` and add all the assigned properties html inside it.
+The agent requires specific directory structure and environment variables:
 
-> Create a new folder named ``possible_addresses`` and add all the assigned properties jsons inside it
+### Directory Structure
+```
+./input/          # Input files to process
+./schemas/        # JSON schemas for validation
+./data/          # Intermediate extracted data
+./processed/     # Final processed data
+./possible_addresses/  # Address candidates
+./submit/        # Final submission format
+```
+
+### Environment Variables
+- `MODEL_NAME`: AI model to use (default: gpt-4.1)
+- `TEMPERATURE`: Model temperature (default: 0)
+
+### Running the Agent
+
+```bash
+# Set environment variables
+export MODEL_NAME=gpt-4.1
+export TEMPERATURE=0
+
+# Run the agent
+test-evaluator-agent
+```
+
+## How It Works
+
+1. **Data Extraction Phase**: Generator creates extraction scripts, Schema and Data Evaluators validate output
+2. **Address Matching Phase**: Generator matches addresses with candidates, CLI Validator checks final output
+3. **Validation**: Multiple validation layers ensure data quality and schema compliance
+
+## Development
+
+This package is designed to be run as a standalone tool with all dependencies managed automatically.
