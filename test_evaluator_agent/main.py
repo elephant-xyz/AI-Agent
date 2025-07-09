@@ -41,14 +41,14 @@ INPUT_DIR = os.path.join(BASE_DIR, "input")
 SCHEMA_CIDS = {
     "person.json": "bafkreiasr6575uesracnkl7ayoru3qkjf43ggrnylkzqfoacnovtbf2j3m",
     "company.json": "bafkreiaeqwyz5ntt6mkhajym2ptfipyf2xmruvyftfazq7ff7e6hrrh6li",
-    "property.json": "bafkreifqv4eogkjqval5spoiqey2gvolnactxakzxw2sfv2akiqdlxd4fq",
-    "address.json": "bafkreihez5udn5ho7ihkbirsdxbkq6grwu3uorakhksys6ucvokkbfdoru",
-    "tax.json": "bafkreic7jtiilcurjfv6q3uz6qyhrbwjsearxqefzwrbibd3plttwqfma4",
+    "property.json": "bafkreif75ex3npcz42pgq47pweltr6iocv63476zk3dxuvs2a3bxpd3qla",
+    "address.json": "bafkreicgqcsukdg6u6ea5w42odzzwo7i4bwfnkqqxiwue5m7ednkmkk4xy",
+    "tax.json": "bafkreiewqyd6atjzb42lmcaqsejhcbdyipymhbik4sqgkofisqqkww4wiq",
     "lot.json": "bafkreibl6rwbx5nyeitdbkvn2l5ygbav42mav3s5q4gpj3tbyntl6p5nny",
     "sales.json": "bafkreialispvbk6p3sxprp5ydmqcqnctc74kk4u4kffkkpnzicicmcgtna",
     "layout.json": "bafkreigypa6mroe77rr63qumofeflllootajf7pniytz5273aw574mhwjm",
     "flood_storm_information.json": "bafkreibqdyph2kduvbu5g45frtwlvhagh45guvcwgaowaf7mn6dgnyxxyi",
-    "data_group.json": "bafkreidxxf27myb7d5wtuxblkwadt37jj4oyhfd35j6g7icrz2oyecsnqq"
+    "data_group.json": "bafkreidaqsch4eh5ogoseuh6wdg4kv6baowske2aymx6a5pbp2zlre53we"
 }
 
 
@@ -901,7 +901,7 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
                                 if 'source_http_request' in json_data:
                                     # Update the JSON data with seed information
                                     json_data['source_http_request'] = seed_data[folder_name]['http_request']
-                                    json_data['request_identifier'] = seed_data[folder_name]['source_identifier']
+                                    json_data['request_identifier'] = str(seed_data[folder_name]['source_identifier'])
 
                                     # Write back to file
                                     with open(json_file_path, 'w', encoding='utf-8') as f:
