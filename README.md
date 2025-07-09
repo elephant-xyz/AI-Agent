@@ -16,7 +16,7 @@ An AI-powered data extraction evaluator agent using LangGraph for property data 
 You can run this tool directly using `uvx`:
 
 ```bash
-uvx --from git+https://github.com/StaircaseAPI/agentic_ai test-evaluator-agent
+uvx --from git+https://github.com/elephant-xyz/agentic_ai test-evaluator-agent
 ```
 
 ## Usage
