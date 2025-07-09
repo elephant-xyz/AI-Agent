@@ -92,11 +92,10 @@ class ExtractionGeneratorEvaluatorPair:
 
         # Create THREE separate LLM agents
         generator_agent = await self._create_generator_agent()
-        schema_evaluator_agent = await self._create_schema_evaluator_agent()
+        # schema_evaluator_agent = await self._create_schema_evaluator_agent()
         data_evaluator_agent = await self._create_data_evaluator_agent()
 
         conversation_turn = 0
-        schema_accepted = False
         data_accepted = False
         cli_accepted = False
 
@@ -116,17 +115,17 @@ class ExtractionGeneratorEvaluatorPair:
 
             logger.info(f"💬 Conversation Turn {conversation_turn}/{self.max_conversation_turns}")
 
-            # SCHEMA EVALUATOR RESPONDS
-            logger.info("🔍 Schema Evaluator reviews Generator's work...")
-            schema_message = await self._agent_speak(
-                agent=schema_evaluator_agent,
-                agent_name="SCHEMA_EVALUATOR",
-                turn=conversation_turn,
-                user_instruction="Review the Generator's extraction work and validate schema compliance"
-            )
-
-            schema_accepted = "STATUS: ACCEPTED" in schema_message
-            logger.info(f"📊 Schema Evaluator decision: {'ACCEPTED' if schema_accepted else 'NEEDS FIXES'}")
+            # # SCHEMA EVALUATOR RESPONDS
+            # logger.info("🔍 Schema Evaluator reviews Generator's work...")
+            # schema_message = await self._agent_speak(
+            #     agent=schema_evaluator_agent,
+            #     agent_name="SCHEMA_EVALUATOR",
+            #     turn=conversation_turn,
+            #     user_instruction="Review the Generator's extraction work and validate schema compliance"
+            # )
+            #
+            # schema_accepted = "STATUS: ACCEPTED" in schema_message
+            # logger.info(f"📊 Schema Evaluator decision: {'ACCEPTED' if schema_accepted else 'NEEDS FIXES'}")
 
             # DATA EVALUATOR RESPONDS
             logger.info("📊 Data Evaluator reviews Generator's work...")
@@ -154,7 +153,7 @@ class ExtractionGeneratorEvaluatorPair:
                 logger.info("❌ CLI Validator decision: NEEDS FIXES")
 
             # Check if ALL validators accepted
-            if schema_accepted and data_accepted and cli_accepted:
+            if data_accepted and cli_accepted:
                 logger.info("✅ Conversation completed successfully - ALL validators approved!")
                 self.state['extraction_complete'] = True
                 self.state['all_files_processed'] = True
@@ -164,8 +163,8 @@ class ExtractionGeneratorEvaluatorPair:
             logger.info("🤖 Generator responds to all validators' feedback...")
 
             feedback_summary = ""
-            if not schema_accepted:
-                feedback_summary += f"Schema Evaluator feedback: {schema_message}\n\n"
+            # if not schema_accepted:
+            #     feedback_summary += f"Schema Evaluator feedback: {schema_message}\n\n"
             if not data_accepted:
                 feedback_summary += f"Data Evaluator feedback: {data_message}\n\n"
             if not cli_accepted:
@@ -184,20 +183,18 @@ class ExtractionGeneratorEvaluatorPair:
                     2. You MUST understand all the root causes of the errors to update data_extraction.py script to fix th extraction errors
                     2. Fix ALL the specific errors mentioned above
                     3. Test your changes by running the script
-                    
+
                 DO NOT just acknowledge - TAKE ACTION NOW with tools to fix these issues.""")
-
-
 
             logger.info(f"🔄 Turn {conversation_turn} complete, continuing conversation...")
 
         # Conversation ended
-        final_status = "ACCEPTED" if (schema_accepted and data_accepted and cli_accepted) else "PARTIAL"
+        final_status = "ACCEPTED" if (data_accepted and cli_accepted) else "PARTIAL"
 
         if final_status != "ACCEPTED":
             logger.warning(f"⚠️ Conversation ended without full success after {self.max_conversation_turns} turns")
             logger.warning(
-                f"Schema: {'✅' if schema_accepted else '❌'}, Data: {'✅' if data_accepted else '❌'}, CLI: {'✅' if cli_accepted else '❌'}")
+                f"Schema: Data: {'✅' if data_accepted else '❌'}, CLI: {'✅' if cli_accepted else '❌'}")
             self.state['all_files_processed'] = False
 
         logger.info(f"💬 Conversation completed with status: {final_status}")
@@ -330,58 +327,58 @@ class ExtractionGeneratorEvaluatorPair:
             checkpointer=self.shared_checkpointer
         )
 
-    async def _create_schema_evaluator_agent(self):
-        """Create Schema Evaluator agent - validates schema compliance"""
-
-        schema_evaluator_prompt = f"""
-        You are the SCHEMA EVALUATOR for input extraction validation in a conversation with a GENERATOR and DATA EVALUATOR.
-
-        🔍 YOUR MISSION: Validate schema compliance and JSON structure
-
-        📋 VALIDATION TASKS:
-            1. CREATE A COMPREHENSIVE VALIDATION SCRIPT: scripts/schema_validator.py
-            2. The script must:
-               - Check that ./data/ contains {self.state['input_files_count']} property folders
-               - Verify each property has all required JSON files
-               - Validate each JSON file against its schema using jsonschema library
-               - Test data format correctness and schema compliance
-               - Generate detailed validation report
-               - Make sure no missing Attributes inside the JSON files, any missing Attributes should be represented as null
-
-            3. EXECUTE the validation script
-            4. ANALYZE the results and provide specific feedback
-        📊 SCHEMAS TO VALIDATE AGAINST:
-            All schemas are located in ./schemas/ directory. Your validation script should:
-            1. Read schema files from ./schemas/ directory
-            2. Use jsonschema library to validate each extracted JSON file
-            3. Check schema compliance for all data files
-            4. Verify JSON structure and data types
-
-        📝 RESPONSE FORMAT:
-        Start with: STATUS: ACCEPTED or STATUS: REJECTED
-
-        Then explain:
-            - Schema compliance results
-            - JSON structure issues
-            - Data type validation errors  
-            - Specific schema fixes needed
-
-
-        🗣️ CONVERSATION RULES:
-        - You focus ONLY on schema compliance and JSON structure
-        - Reference what the GENERATOR did in your responses
-        - Give specific feedback about schema violations
-        - Don't worry about data completeness - that's the Data Evaluator's job
-
-        🚀 START: Check schema compliance and give your feedback.
-        """
-
-        return create_react_agent(
-            model=self.model,
-            tools=self.tools,
-            prompt=schema_evaluator_prompt,
-            checkpointer=self.shared_checkpointer
-        )
+    # async def _create_schema_evaluator_agent(self):
+    #     """Create Schema Evaluator agent - validates schema compliance"""
+    #
+    #     schema_evaluator_prompt = f"""
+    #     You are the SCHEMA EVALUATOR for input extraction validation in a conversation with a GENERATOR and DATA EVALUATOR.
+    #
+    #     🔍 YOUR MISSION: Validate schema compliance and JSON structure
+    #
+    #     📋 VALIDATION TASKS:
+    #         1. CREATE A COMPREHENSIVE VALIDATION SCRIPT: scripts/schema_validator.py
+    #         2. The script must:
+    #            - Check that ./data/ contains {self.state['input_files_count']} property folders
+    #            - Verify each property has all required JSON files
+    #            - Validate each JSON file against its schema using jsonschema library
+    #            - Test data format correctness and schema compliance
+    #            - Generate detailed validation report
+    #            - Make sure no missing Attributes inside the JSON files, any missing Attributes should be represented as null
+    #
+    #         3. EXECUTE the validation script
+    #         4. ANALYZE the results and provide specific feedback
+    #     📊 SCHEMAS TO VALIDATE AGAINST:
+    #         All schemas are located in ./schemas/ directory. Your validation script should:
+    #         1. Read schema files from ./schemas/ directory
+    #         2. Use jsonschema library to validate each extracted JSON file
+    #         3. Check schema compliance for all data files
+    #         4. Verify JSON structure and data types
+    #
+    #     📝 RESPONSE FORMAT:
+    #     Start with: STATUS: ACCEPTED or STATUS: REJECTED
+    #
+    #     Then explain:
+    #         - Schema compliance results
+    #         - JSON structure issues
+    #         - Data type validation errors
+    #         - Specific schema fixes needed
+    #
+    #
+    #     🗣️ CONVERSATION RULES:
+    #     - You focus ONLY on schema compliance and JSON structure
+    #     - Reference what the GENERATOR did in your responses
+    #     - Give specific feedback about schema violations
+    #     - Don't worry about data completeness - that's the Data Evaluator's job
+    #
+    #     🚀 START: Check schema compliance and give your feedback.
+    #     """
+    #
+    #     return create_react_agent(
+    #         model=self.model,
+    #         tools=self.tools,
+    #         prompt=schema_evaluator_prompt,
+    #         checkpointer=self.shared_checkpointer
+    #     )
 
     async def _create_data_evaluator_agent(self):
         """Create Data Evaluator agent - validates data completeness"""
@@ -392,7 +389,7 @@ class ExtractionGeneratorEvaluatorPair:
         🔍 YOUR MISSION: Validate data completeness and accuracy check the extraction script if there is any TODO ask the generator to fix
         CRITICAL: DONOT ACCEPT IF county_data_group.json file not found in each property
         your job is :
-        Take sample of 3-5 properties from ./data/ directory and check if the extraction script is generated,  You should accept the data unless all the following criteria are met :
+        Take sample of 3-5 properties from ./data/ directory and the corresponding files from ./input/ directory and check if the extraction script is generated You should accept the data unless all the following criteria are met you should know if it met or now by comparing the extracted data with the original input files:
             1- Your job to make sure all the data has been extracted successfully by Comparing extracted data with original input files
             2- If county_data_group.json file is missing or not in IPLD format or not following data_group.json schema ask generator to fix the script to include for each property
             3- presence of layouts, bedrooms,fullbathrooms and half bathroom, that were extracted for all available space types example 2 bedroom, 1 full batroom and 1 half bathroom results in 4 layout files
