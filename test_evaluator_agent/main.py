@@ -801,6 +801,7 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
         upload_results_path = os.path.join(BASE_DIR, "upload-results.csv")
         data_dir = os.path.join(BASE_DIR, data_dir)
         submit_dir = os.path.join(BASE_DIR, "submit")
+        seed_csv_path = os.path.join(BASE_DIR, "seed.csv")
 
         # Create/clean submit directory
         if os.path.exists(submit_dir):
@@ -842,7 +843,29 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
 
             logger.info(f"✅ Created mapping for {len(folder_mapping)} unique folders")
         else:
-            logger.warning("⚠️ uploadresults.csv not found, using original folder names")
+            logger.warning("⚠️ upload-results.csv not found, using original folder names")
+
+        # Read seed.csv and create mapping
+        logger.info("Reading seed.csv for JSON updates...")
+        seed_data = {}
+        seed_csv_path = os.path.join(BASE_DIR, "seed.csv")
+
+        if os.path.exists(seed_csv_path):
+            seed_df = pd.read_csv(seed_csv_path)
+            logger.info(f"📊 Found {len(seed_df)} entries in seed.csv")
+
+            # Create mapping from parcel_id (original folder name) to http_request and source_identifier
+            for _, row in seed_df.iterrows():
+                parcel_id = str(row['parcel_id'])
+                seed_data[parcel_id] = {
+                    'http_request': row['http_request'],
+                    'source_identifier': row['source_identifier']
+                }
+
+            logger.info(f"✅ Created seed mapping for {len(seed_data)} parcel IDs")
+        else:
+            logger.warning("⚠️ seed.csv not found, skipping JSON updates")
+            seed_data = {}
 
         # Copy data to submit directory with proper naming
         copied_count = 0
@@ -861,6 +884,41 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
                 shutil.copytree(src_folder_path, dst_folder_path)
                 logger.info(f"   📂 Copied folder: {folder_name} -> {target_folder_name}")
                 copied_count += 1
+
+                # Update JSON files with seed data (folder_name is the original parcel_id)
+                if folder_name in seed_data:
+                    updated_files_count = 0
+                    for file_name in os.listdir(dst_folder_path):
+                        if file_name.endswith('.json'):
+                            json_file_path = os.path.join(dst_folder_path, file_name)
+
+                            try:
+                                # Read JSON file
+                                with open(json_file_path, 'r', encoding='utf-8') as f:
+                                    json_data = json.load(f)
+
+                                # Check if this JSON has source_http_request field
+                                if 'source_http_request' in json_data:
+                                    # Update the JSON data with seed information
+                                    json_data['source_http_request'] = seed_data[folder_name]['http_request']
+                                    json_data['request_identifier'] = seed_data[folder_name]['source_identifier']
+
+                                    # Write back to file
+                                    with open(json_file_path, 'w', encoding='utf-8') as f:
+                                        json.dump(json_data, f, indent=2, ensure_ascii=False)
+
+                                    updated_files_count += 1
+
+                            except json.JSONDecodeError as e:
+                                logger.error(f"   ❌ Error parsing JSON file {json_file_path}: {e}")
+                            except Exception as e:
+                                logger.error(f"   ❌ Error processing file {json_file_path}: {e}")
+
+                    if updated_files_count > 0:
+                        logger.info(
+                            f"   🌱 Updated {updated_files_count} JSON files with seed data for parcel {folder_name}")
+                else:
+                    logger.warning(f"   ⚠️ No seed data found for parcel {folder_name}")
 
                 # Rename county_data_group.json file in the copied folder
                 county_file_path = os.path.join(dst_folder_path, "county_data_group.json")
