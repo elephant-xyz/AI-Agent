@@ -987,7 +987,7 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
 
         try:
             result = subprocess.run(
-                ["npx", "@elephant-xyz/cli", "validate-and-upload", "submit", "--dry-run", "--output-csv",
+                ["npx", "-y","@elephant-xyz/cli", "validate-and-upload", "submit", "--dry-run", "--output-csv",
                  "results.csv"],
                 cwd=BASE_DIR,
                 capture_output=True,
