@@ -4,9 +4,11 @@ import sys
 import json
 import logging
 import requests
+import time
+import hashlib
 import shutil
 import subprocess
-from typing import Dict, Any, List, TypedDict
+from typing import Dict, Any, List, TypedDict, Set
 import pandas as pd
 
 from langgraph.graph import StateGraph, END
@@ -39,16 +41,15 @@ INPUT_DIR = os.path.join(BASE_DIR, "input")
 #
 # # IPFS CIDs for schemas
 SCHEMA_CIDS = {
-    "person.json": "bafkreiasr6575uesracnkl7ayoru3qkjf43ggrnylkzqfoacnovtbf2j3m",
-    "company.json": "bafkreiaeqwyz5ntt6mkhajym2ptfipyf2xmruvyftfazq7ff7e6hrrh6li",
-    "property.json": "bafkreif75ex3npcz42pgq47pweltr6iocv63476zk3dxuvs2a3bxpd3qla",
-    "address.json": "bafkreicgqcsukdg6u6ea5w42odzzwo7i4bwfnkqqxiwue5m7ednkmkk4xy",
-    "tax.json": "bafkreiewqyd6atjzb42lmcaqsejhcbdyipymhbik4sqgkofisqqkww4wiq",
-    "lot.json": "bafkreibl6rwbx5nyeitdbkvn2l5ygbav42mav3s5q4gpj3tbyntl6p5nny",
+    "person.json": "bafkreigbqmehadrofn3grnmlsltdfffgcgxzarfnae6jmb4cfkyrrxr4di",
+    "company.json": "bafkreie4rkzcye3yd75ftl6p7uj6vlkfy7i3l5smhq6ro6xnjppe5cxcpa",
+    "property.json": "bafkreiega6qiypxfdqdpaz4b6owi7fkp2toijbgdmpfxiirx7fcaxrrpiq",
+    "address.json": "bafkreihtho6x26y46x2dod5cgbs4zwzz5btg3hxajraoxx5itf7ipt5svy",
+    "tax.json": "bafkreiaujocuc24xb2ckvf2eqzyzq7tt43toh3ew7id5scqywusb5l7wcu",
+    "lot.json": "bafkreib7l6jsar7sc6lixfkybaueytfgnxig3qjbn5ezp3efxcu47yppbq",
     "sales.json": "bafkreialispvbk6p3sxprp5ydmqcqnctc74kk4u4kffkkpnzicicmcgtna",
     "layout.json": "bafkreigypa6mroe77rr63qumofeflllootajf7pniytz5273aw574mhwjm",
-    "flood_storm_information.json": "bafkreibqdyph2kduvbu5g45frtwlvhagh45guvcwgaowaf7mn6dgnyxxyi",
-    "data_group.json": "bafkreidaqsch4eh5ogoseuh6wdg4kv6baowske2aymx6a5pbp2zlre53we"
+    "flood_storm_information.json": "bafkreihu5ayhmiyhjtibveyca7gund5d5p5ojtcqhe6wxa2n64dlb4r6ze",
 }
 
 
@@ -60,6 +61,7 @@ class WorkflowState(TypedDict):
     stub_files: Dict[str, Any]
     extraction_complete: bool
     address_matching_complete: bool
+    owner_analysis_complete: bool
     validation_errors: List[str]
     processed_properties: List[str]
     current_node: str
@@ -69,6 +71,755 @@ class WorkflowState(TypedDict):
     max_retries: int
     all_files_processed: bool
     all_addresses_matched: bool
+    error_history: List[str]  # Track recent errors
+    consecutive_same_errors: int  # Count of same errors in a row
+    last_error_hash: str  # Hash of last error for comparison
+    generation_restart_count: int  # Track how many times we've restarted
+    max_generation_restarts: int  # Limit restarts to prevent infinite loops
+    agent_timeout_seconds: int  # Timeout for agent operations
+    last_agent_activity: float
+
+
+def update_agent_activity(state: WorkflowState):
+    """Update the last agent activity timestamp"""
+    state['last_agent_activity'] = time.time()
+
+
+def is_agent_frozen(state: WorkflowState) -> bool:
+    """Check if agent has been inactive for too long"""
+    if 'last_agent_activity' not in state or state['last_agent_activity'] == 0:
+        return False
+
+    elapsed = time.time() - state['last_agent_activity']
+    return elapsed > state['agent_timeout_seconds']
+
+
+def should_restart_due_to_timeout(state: WorkflowState) -> bool:
+    """Check if we should restart due to agent timeout"""
+    return (is_agent_frozen(state) and
+            state['generation_restart_count'] < state['max_generation_restarts'])
+
+
+class OwnerAnalysisAgent:
+    """Agent responsible for extracting and analyzing owner names from input files"""
+
+    def __init__(self, state: WorkflowState, model, tools):
+        self.state = state
+        self.model = model
+        self.tools = tools
+        self.max_conversation_turns = 10
+        self.checkpointer = InMemorySaver()  # Own independent checkpointer
+        self.thread_id = "owner-analysis-independent-1"  # Own independent thread
+
+    async def run_owner_analysis(self) -> WorkflowState:
+        """Run owner analysis and schema generation"""
+
+        logger.info("🔄 Starting Owner Analysis Agent")
+        logger.info(f"💬 Analyzing owners from {self.state['input_files_count']} input files")
+
+        # Create owner analysis agent
+        owner_agent = await self._create_owner_analysis_agent()
+
+        conversation_turn = 0
+        analysis_complete = False
+
+        # Start the analysis
+        logger.info("🤖 Owner Analysis Agent starts...")
+
+        try:
+            await self._agent_speak(
+                agent=owner_agent,
+                agent_name="OWNER_ANALYZER",
+                turn=1,
+                user_instruction="""Start by analyzing all owner names from input files and generate owner schema.
+
+CRITICAL ISSUE: Previously, the extraction resulted in all null owner names. This means the extraction script didn't understand the input file structure.
+
+YOU MUST:
+1. FIRST examine the input files to understand their exact structure
+2. Look for where ownerName1 and ownerName2 are located (could be nested in JSON or embedded in HTML)
+3. Create extraction script that correctly finds and extracts the owner data
+4. VERIFY that extracted data contains actual names, not nulls
+
+REQUIRED OUTPUT FILES:
+1. owners/owners_extracted.json (raw extracted owner data - must contain actual names, not nulls)
+2. owners/owners_schema.json (analyzed and structured owner data)
+
+DO NOT just talk about creating them - ACTUALLY CREATE THEM using your tools.
+Execute your scripts and verify the files contain real owner data before finishing."""
+            )
+
+            # Check if files were actually created
+            owners_schema_path = os.path.join(BASE_DIR, "owners", "owners_schema.json")
+            owners_extracted_path = os.path.join(BASE_DIR, "owners", "owners_extracted.json")
+
+            if os.path.exists(owners_schema_path) and os.path.exists(owners_extracted_path):
+                analysis_complete = True
+                logger.info("📁 Verified: Both required files were created successfully")
+            else:
+                analysis_complete = False
+                missing = []
+                if not os.path.exists(owners_schema_path):
+                    missing.append("owners_schema.json")
+                if not os.path.exists(owners_extracted_path):
+                    missing.append("owners_extracted.json")
+                logger.error(f"❌ Missing required files: {', '.join(missing)}")
+
+        except Exception as e:
+            logger.error(f"Error in owner analysis: {e}")
+            analysis_complete = False
+
+        if analysis_complete:
+            logger.info("✅ Owner Analysis completed successfully")
+            self.state['owner_analysis_complete'] = True
+        else:
+            logger.warning("⚠️ Owner Analysis completed with issues")
+            self.state['owner_analysis_complete'] = False
+
+        return self.state
+
+    async def _create_owner_analysis_agent(self):
+        """Create Owner Analysis agent"""
+
+        owner_analysis_prompt = f"""
+        You are the OWNER ANALYSIS SPECIALIST responsible for extracting and analyzing owner names from property input files.
+
+        🎯 YOUR MISSION: 
+        1. Extract ALL owner names from input files
+        2. Analyze and categorize them (Person vs Company)
+        3. Generate proper schema structure for each type
+
+        📂 INPUT STRUCTURE:
+        - Input files are located in ./input/ directory ({self.state['input_files_count']} files)
+        - Files can be .html or .json format
+        - understand the structure of owner names and how they are stored
+        - Some properties have only ownerName1, others have both ownerName1 and ownerName2
+        - YOU MUST EXAMINE the actual input files to understand their structure first
+        - Owner data might be nested within JSON objects or embedded in HTML
+
+        🔧 YOUR TASKS:
+
+        PHASE 0: UNDERSTAND INPUT STRUCTURE (CRITICAL)
+        1. First, examine 3-5 sample input files to understand:
+           - Are they JSON or HTML format?
+           - What is the exact structure?
+           - Where exactly are ownerName1 and ownerName2 located?
+           - Are they at root level or nested inside objects?
+           - Print sample data to understand the format
+
+        PHASE 1: EXTRACTION
+        1. CREATE a script: scripts/owner_extractor.py
+        2. The script must:
+           - Read ALL files from ./input/ directory
+           - Handle both JSON and HTML input formats correctly
+           - Extract ownerName1 and ownerName2 from each file (find the correct path/location)
+           - Handle nested JSON structures if needed
+           - Parse HTML content if input files are HTML
+           - Save extracted data to: owners/owners_extracted.json
+           - ENSURE owner names are NOT null - if extraction fails, debug and fix
+        3. Execute the extraction script and verify it extracts actual owner names
+
+        PHASE 2: ANALYSIS & CATEGORIZATION
+        1. CREATE a script: scripts/owner_analyzer.py  
+        2. The script must:
+           - Read owners/owners_extracted.json
+           - Analyze each owner name to determine if it's a Person or Company
+           - Parse person names into: first_name, last_name, middle_name
+           - Identify company names (look for: Inc, LLC, Ltd, Foundation, Alliance, Solutions, Services, etc.)
+           - Generate structured data following person/company schemas
+
+        🏢 COMPANY DETECTION RULES:
+        Detect companies by these indicators:
+        - Legal suffixes: Inc, LLC, Ltd, Corp, Co
+        - Nonprofits: Foundation, Alliance, Rescue, Mission
+        - Services: Solutions, Services, Systems, Council
+        - Military/Emergency: Veterans, First Responders, Heroes
+        - Organizations: Initiative, Association, Group
+
+
+        📋 OUTPUT STRUCTURE:
+        Generate: owners/owners_schema.json with this structure:
+        ```json
+        {{
+          "property_[id]": {{
+            "owners": [
+              {{
+                "type": "person",
+                "first_name": "Jason",
+                "last_name": "Tomaszewski",
+                "middle_name": null
+              }},
+              {{
+                "type": "person", 
+                "first_name": "Miryam",
+                "last_name": "Greene-Tomaszewski",
+                "middle_name": null
+              }}
+            ]
+          }},
+          "property_[id2]": {{
+            "owners": [
+              {{
+                "type": "person",
+                "first_name": "Thomas",
+                "last_name": "Walker", 
+                "middle_name": "W"
+              }}
+            ]
+          }},
+          "property_[id3]": {{
+            "owners": [
+              {{
+                "type": "company",
+                "name": "First Responders Foundation"
+              }}
+            ]
+          }}
+        }}
+        ```
+
+        ⚠️ CRITICAL RULES:
+        - FIRST examine input file structure before writing extraction code
+        - Process ALL {self.state['input_files_count']} input files
+        - Handle missing ownerName2 gracefully (can be empty/null, but ownerName1 should exist)
+        - If all owner names are null, the extraction script has a bug - FIX IT
+        - Properly detect company vs person names
+        - Convert names to proper case (not ALL CAPS)
+        - Handle special characters and hyphens correctly
+        - Generate clean, structured output
+        - YOU MUST CREATE BOTH FILES: owners_extracted.json AND owners_schema.json
+        - DO NOT FINISH until both files exist and contain actual owner data (not all nulls)
+
+        🚀 START: Begin by examining input file structure, then create extraction script, then analysis script, then execute both and VERIFY files contain real data.
+        """
+
+        return create_react_agent(
+            model=self.model,
+            tools=self.tools,
+            prompt=owner_analysis_prompt,
+            checkpointer=self.checkpointer  # Use independent checkpointer
+        )
+
+    async def _agent_speak(self, agent, agent_name: str, turn: int, user_instruction: str) -> str:
+        """Have an agent speak in the conversation"""
+
+        update_agent_activity(self.state)
+
+        logger.info(f"     🗣️ {agent_name} speaking (Turn {turn})...")
+
+        config = {
+            "configurable": {"thread_id": self.thread_id},  # Use independent thread
+            "recursion_limit": 100
+        }
+
+        messages = [{
+            "role": "user",
+            "content": user_instruction
+        }]
+
+        agent_response = ""
+        tool_calls_made = []
+
+        try:
+            timeout_seconds = self.state['agent_timeout_seconds']
+            last_activity = time.time()
+
+            async def check_inactivity():
+                nonlocal last_activity
+                while True:
+                    await asyncio.sleep(10)
+                    current_time = time.time()
+                    if current_time - last_activity > timeout_seconds:
+                        logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
+                        raise asyncio.TimeoutError(f"{agent_name} inactive for {timeout_seconds} seconds")
+
+            inactivity_task = asyncio.create_task(check_inactivity())
+
+            try:
+                async for event in agent.astream_events({"messages": messages}, config, version="v1"):
+                    last_activity = time.time()
+                    update_agent_activity(self.state)
+
+                    kind = event["event"]
+
+                    if kind == "on_tool_start":
+                        tool_name = event['name']
+                        tool_output = event['data'].get('output', '')
+                        logger.info(f"       🔧 {agent_name} using tool: {tool_name}")
+                        logger.info(f"       📝 Tool input: {str(tool_output)[:150]}...")
+                        tool_calls_made.append(tool_name)
+
+                    elif kind == "on_tool_end":
+                        tool_name = event['name']
+                        tool_output = event['data'].get('output', '')
+                        success_indicator = "✅" if "error" not in str(tool_output).lower() else "❌"
+                        logger.info(f"       {success_indicator} {agent_name} tool {tool_name} completed")
+
+                    elif kind == "on_chain_end":
+                        output = event['data'].get('output', '')
+                        if isinstance(output, dict) and 'messages' in output:
+                            last_message = output['messages'][-1] if output['messages'] else None
+                            if last_message and hasattr(last_message, 'content'):
+                                agent_response = last_message.content
+
+            finally:
+                inactivity_task.cancel()
+                try:
+                    await inactivity_task
+                except asyncio.CancelledError:
+                    pass
+
+            logger.info(f"     ✅ {agent_name} finished speaking")
+            return agent_response or f"{agent_name} completed turn {turn}"
+
+        except asyncio.TimeoutError:
+            logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT")
+            raise Exception(f"{agent_name} timed out - restarting")
+        except Exception as e:
+            logger.error(f"     ❌ {agent_name} error: {str(e)}")
+            return f"{agent_name} error on turn {turn}: {str(e)}"
+
+
+class AddressMatchingGeneratorEvaluatorPair:
+    """Generator and Evaluator for address matching node with validation"""
+
+    def __init__(self, state: WorkflowState, model, tools, schemas: Dict[str, Any]):
+        self.state = state
+        self.model = model
+        self.tools = tools
+        self.schemas = schemas
+        self.max_conversation_turns = 15  # Fewer turns than extraction
+        self.shared_checkpointer = InMemorySaver()  # Shared between all agents
+        self.shared_thread_id = "address-matching-conversation-1"  # Same thread for all
+        self.consecutive_script_failures = 0
+        self.max_script_failures = 3
+
+    async def _restart_generation_process(self) -> WorkflowState:
+        """Restart the generation process with a fresh thread"""
+        logger.info("🔄 RESTARTING ADDRESS MATCHING PROCESS - Creating new thread and agents")
+
+        cleanup_directories()
+        self.state['last_agent_activity'] = 0
+        self.state['generation_restart_count'] += 1
+
+        # Create new thread ID for fresh start
+        self.shared_thread_id = f"address-matching-conversation-restart-{self.state['generation_restart_count']}"
+        self.shared_checkpointer = InMemorySaver()
+
+        # Reset conversation state
+        self.max_conversation_turns = 15
+
+        logger.info(f"🆕 Starting fresh address matching attempt #{self.state['generation_restart_count']}")
+        logger.info(f"🆕 New thread ID: {self.shared_thread_id}")
+
+        return await self.run_feedback_loop()
+
+    async def run_feedback_loop(self) -> WorkflowState:
+        """Run Address Matching Generator + Evaluator CONVERSATION (No CLI validation)"""
+
+        logger.info("🔄 Starting Address Matching Generator + Evaluator CONVERSATION")
+        logger.info(f"💬 Using shared thread: {self.shared_thread_id}")
+        logger.info(f"🎭 Two agents: Generator, Evaluator")
+
+        # Create agents
+        generator_agent = await self._create_address_generator_agent()
+        evaluator_agent = await self._create_address_evaluator_agent()
+
+        conversation_turn = 0
+        evaluator_accepted = False
+
+        # GENERATOR STARTS: Create initial script
+        logger.info("🤖 Address Generator starts the conversation...")
+
+        await self._agent_speak(
+            agent=generator_agent,
+            agent_name="ADDRESS_GENERATOR",
+            turn=1,
+            user_instruction="Start by creating the address matching script and processing all input files"
+        )
+
+        # Continue conversation until evaluator accepts or max turns
+        while conversation_turn < self.max_conversation_turns:
+            conversation_turn += 1
+
+            if hasattr(self, 'force_restart_now') and self.force_restart_now:
+                logger.warning("🔄 Address matching script failure restart triggered - restarting now")
+                self.force_restart_now = False
+                return await self._restart_generation_process()
+
+            if should_restart_due_to_timeout(self.state):
+                logger.warning("⏰ Agent timeout detected - restarting address matching process")
+                return await self._restart_generation_process()
+
+            logger.info(f"💬 Address Matching Turn {conversation_turn}/{self.max_conversation_turns}")
+
+            # EVALUATOR RESPONDS
+            logger.info("📊 Address Evaluator reviews Generator's work...")
+            try:
+                evaluator_message = await self._agent_speak(
+                    agent=evaluator_agent,
+                    agent_name="ADDRESS_EVALUATOR",
+                    turn=conversation_turn,
+                    user_instruction="Review and evaluate the Address Generator's matching work and validate address completeness by comparing with sample input files. Check if addresses_mapping.json is properly created with correct address components.",
+                )
+                # Add debug logging here:
+                logger.info(f"🔍 DEBUG: Full evaluator response:")
+                logger.info(f"📝 {evaluator_message}")
+
+            except Exception as e:
+                if "timed out" in str(e):
+                    logger.warning("⏰ Agent timeout during ADDRESS_EVALUATOR - restarting")
+                    return await self._restart_generation_process()
+                raise
+
+            evaluator_accepted = "STATUS: ACCEPTED" in evaluator_message
+            logger.info(f"📊 Address Evaluator decision: {'ACCEPTED' if evaluator_accepted else 'NEEDS FIXES'}")
+
+            # Check if evaluator accepted
+            if evaluator_accepted:
+                logger.info("✅ Address matching conversation completed successfully - Evaluator approved!")
+                self.state['address_matching_complete'] = True
+                self.state['all_addresses_matched'] = True
+                break
+
+            # GENERATOR RESPONDS: Sees feedback from evaluator and fixes issues
+            logger.info("🤖 Address Generator responds to evaluator's feedback...")
+
+            await self._agent_speak(
+                agent=generator_agent,
+                agent_name="ADDRESS_GENERATOR",
+                turn=conversation_turn + 1,
+                user_instruction=f"""IMMEDIATE ACTION REQUIRED,
+                SILENTLY Fix the address matching issues found by the evaluator immediately. Work silently, Don't reply to them, just use your tools to update the address_extraction.py script to Fix these specific issues:\n\n{evaluator_message}
+
+                DONOT REPLY FIX SILENTLY,
+
+                YOU MUST:
+                    1. Use the filesystem tools to read/modify the address extraction script
+                    2. You MUST understand all the root causes of the errors to update address_extraction.py script to fix the address matching errors
+                    3. Fix ALL the specific errors mentioned above
+                    4. Test your changes by running the script and make sure you eliminated these errors
+                    5. MAKE sure you have eliminated the errors before Quitting
+
+                DO NOT just acknowledge - TAKE ACTION NOW with tools to fix these issues.""")
+
+            logger.info(f"🔄 Address matching turn {conversation_turn} complete, continuing conversation...")
+
+        # Conversation ended
+        final_status = "ACCEPTED" if evaluator_accepted else "PARTIAL"
+
+        if final_status != "ACCEPTED":
+            logger.warning(
+                f"⚠️ Address matching conversation ended without full success after {self.max_conversation_turns} turns")
+            logger.warning(f"Evaluator: {'✅' if evaluator_accepted else '❌'}")
+            self.state['all_addresses_matched'] = False
+
+        logger.info(f"💬 Address matching conversation completed with status: {final_status}")
+        return self.state
+
+    async def _create_address_generator_agent(self):
+        """Create Address Generator agent"""
+        generator_prompt = f"""
+            You are an address matching specialist handling the final phase of property data processing, you job is to create address_extraction.py script after understading your full task:
+
+            🔄 CURRENT STATUS:
+                🔁 Attempt: {self.state['retry_count'] + 1} of {self.state['max_retries']}
+
+            🎯 YOUR MISSION: Process ALL properties in ./input/ by writing a script that matches addresses,  scripts/address_extraction.py.
+
+            PHASE 1: ANALYZE THE DATA STRUCTURE
+                1. Examine 3-5 samples from possible_addresses/ to understand:
+                   - JSON format and field structure
+                   - How many address candidates each property has
+                   - Address format variations
+
+                2. Check corresponding input files for these 3-5 samples to understand:
+                   - Where addresses appear in the input
+                   - How to extract: street number, street name, unit, city, zip
+
+                3. Plan your matching strategy before coding
+
+            PHASE 2: BUILD THE MATCHING SCRIPT
+                Create: scripts/address_extraction.py
+
+                The script must:
+                   - process all property in ./input/
+                   - Extract property_parcel_id from input file name
+                   - Load possible_addresses/[property_parcel_id].json (candidate addresses)
+                   - Parse address from input/[property_parcel_id] files
+                   - Extract all address attributes inside ./schemas/address.json following the address schema with a validation function to validate the address against the schema
+                   - with a validation function to validate the address against the schema , if not valid, fix the script and rerun
+                   - correctly extract plus_four_postal_code
+                   - get the county name from seed.csv file
+
+                B. Find the best address match:
+                   - Compare input files address with candidates in possible_addresses/
+                   - Use exact matching first, then fuzzy matching if needed
+                   - Focus on: street number + street name + unit (if applicable)
+
+
+                C. When match found:
+                   - Update addresses_mapping.json with matched address data using schema: ./schemas/address.json 
+
+            📋 OUTPUT STRUCTURE:
+            Generate: owners/addresses_mapping.json with this structure: following the address schema: {self.state['schemas']['address.json']}
+            ```json
+            {{
+              "property_[id]": {{
+                "address": 
+                  {{
+                      "city_name": "MARGATE",
+                      "postal_code": "33063",
+                      "state_code": "FL",
+                      "street_name": "18",
+                      "street_number": "6955",
+                      "street_post_directional_text": null,
+                      "street_pre_directional_text": "NW",
+                      "street_suffix_type": "ST",
+                      "unit_identifier": null,
+                      "latitude": 1234,
+                      "longitude": 1234,
+                      ...
+                  }}
+
+              }},
+
+              "property_[id2]": {{
+                "address": 
+                  {{
+                      "city_name": "MARGATE",
+                      "postal_code": "33063",
+                      "state_code": "FL",
+                      "street_name": "24 COURT",
+                      "street_number": "6731",
+                      "street_post_directional_text": null,
+                      "street_pre_directional_text": "NW",
+                      "street_suffix_type": "ST",
+                      "unit_identifier": null,
+                      "latitude": 1234,
+                      "longitude": 1234,
+                  }}
+              }}
+            }}
+            ```
+
+            SUCCESS CRITERIA:
+                ✅ All addresses_mapping.json files have proper address data with N number of properties in input/ dir
+
+            START with data analysis, then build the script, then execute until complete.
+            """
+
+        return create_react_agent(
+            model=self.model,
+            tools=self.tools,
+            prompt=generator_prompt,
+            checkpointer=self.shared_checkpointer
+        )
+
+    async def _create_address_evaluator_agent(self):
+        """Create Address Evaluator agent"""
+        evaluator_prompt = f"""
+        You are the ADDRESS EVALUATOR in a multi-agent address matching pipeline.
+
+        🎯 YOUR TASK:
+        You are responsible for **address matching completeness and accuracy validation ONLY**. You must validate that the addresses_mapping.json file contains properly matched addresses from the input files.
+
+        🔍 YOUR VALIDATION FLOW:
+
+        STEP 1: CREATE VALIDATION SCRIPT
+        First, create a validation script: scripts/address_validation.py that:
+        - Reads owners/addresses_mapping.json
+        - Validates each address against the address schema: {self.state['schemas']['address.json']}
+        - Checks for required fields, data types, and format compliance
+        - Reports validation errors, missing data, or schema violations
+        - Prints detailed validation results
+
+        STEP 2: EXECUTE VALIDATION SCRIPT
+        Run the validation script and analyze the results, ALL ADDRESSES MUST BE VALID AGAINST THE SCHEMA.
+
+        STEP 3: MANUAL VALIDATION
+        For a **sample of 3–5 properties**:
+        1. **Check if owners/addresses_mapping.json exists** and has content
+        2. you MUST **Verify address components** are properly extracted, everysingle attribute must be verified that it exists:
+          Checklist of address components to verify:
+           - street_number
+           - street_name 
+           - unit_identifier
+           - city_name
+           - postal_code
+           - state_code
+           - street_pre_directional_text
+           - street_post_directional_text
+           - street_suffix_type
+           - latitude/longitude if available
+        3. **Compare with input files** to ensure addresses match the source data
+        4. **Verify matching logic** worked correctly by checking a few examples
+
+        ✅ VALIDATION CHECKLIST:
+        1. addresses_mapping.json file exists in owners/ directory
+        2. File contains address data for all properties in input/ directory
+        3. Address components are properly extracted and not null/empty where data exists
+        4. Addresses match the format specified in the address schema
+        5. No placeholder or TODO values in the address data
+        6. Address matching logic correctly identified the best match from possible_addresses/
+        7. Schema validation script runs successfully and reports no errors
+        8.  ALL ADDRESSES MUST BE VALID AGAINST THE SCHEMA.
+
+        📝 RESPONSE FORMAT:
+        Start your response with one of the following:
+        STATUS: ACCEPTED
+        or
+        STATUS: REJECTED
+
+        Then explain only what is necessary:
+        - Missing addresses_mapping.json file: <Only if missing>
+        - Validation script results: <Include the output from address_validation.py>
+        - Incomplete address data: <Only if incomplete>
+        - Address component issues: <Only if found>
+        - Schema compliance issues: <Only if found>
+        - Matching logic problems: <Only if found>
+
+        🗣️ CONVERSATION RULES:
+        - You must FIRST create and run the validation script
+        - Then perform manual validation on sample data
+        - Only care about address matching completeness and accuracy
+        - Be strict. Accept only if ALL criteria are clearly met
+        - Always include the validation script output in your response
+
+        🚀 START: Create validation script, run it, then check address matching completeness and return your evaluation.
+        """
+
+        return create_react_agent(
+            model=self.model,
+            tools=self.tools,
+            prompt=evaluator_prompt,
+            checkpointer=self.shared_checkpointer
+        )
+
+    async def _agent_speak(self, agent, agent_name: str, turn: int, user_instruction: str) -> str:
+        """Have an agent speak in the conversation - they see all previous messages"""
+        # Copy the exact same implementation from ExtractionGeneratorEvaluatorPair._agent_speak
+        # This is identical to the extraction version
+
+        update_agent_activity(self.state)
+        logger.info(f"     🗣️ {agent_name} speaking (Turn {turn})...")
+        logger.info(f"     👀 {agent_name} using shared checkpointer memory")
+
+        config = {
+            "configurable": {"thread_id": self.shared_thread_id},
+            "recursion_limit": 100
+        }
+
+        messages = [{
+            "role": "user",
+            "content": user_instruction
+        }]
+
+        logger.info(f"     📖 {agent_name} using checkpointer memory...")
+
+        agent_response = ""
+        tool_calls_made = []
+
+        try:
+            timeout_seconds = self.state['agent_timeout_seconds']
+            last_activity = time.time()
+
+            async def check_inactivity():
+                nonlocal last_activity
+                while True:
+                    await asyncio.sleep(10)
+                    current_time = time.time()
+                    if current_time - last_activity > timeout_seconds:
+                        logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
+                        raise asyncio.TimeoutError(f"{agent_name} inactive for {timeout_seconds} seconds")
+
+            inactivity_task = asyncio.create_task(check_inactivity())
+
+            try:
+                async for event in agent.astream_events({"messages": messages}, config, version="v1"):
+                    last_activity = time.time()
+                    update_agent_activity(self.state)
+
+                    kind = event["event"]
+
+                    if kind == "on_chain_start":
+                        logger.info(f"       🔗 {agent_name} chain starting: {event.get('name', 'unknown')}")
+
+                    elif kind == "on_llm_start":
+                        logger.info(f"       🧠 {agent_name} thinking...")
+
+                    elif kind == "on_llm_end":
+                        llm_output = event['data'].get('output', '')
+                        if hasattr(llm_output, 'content'):
+                            content = llm_output.content[:200] + "..." if len(
+                                llm_output.content) > 200 else llm_output.content
+                            logger.info(f"       💭 {agent_name} decided: {content}")
+
+                    elif kind == "on_tool_start":
+                        tool_name = event['name']
+                        tool_input = event['data'].get('input', {})
+                        logger.info(f"       🔧 {agent_name} using tool: {tool_name}")
+                        logger.info(f"       📝 Tool input: {str(tool_input)[:150]}...")
+                        tool_calls_made.append(tool_name)
+
+                    elif kind == "on_tool_end":
+                        tool_name = event['name']
+                        tool_output = event['data'].get('output', '')
+                        success_indicator = "✅" if "error" not in str(tool_output).lower() else "❌"
+                        if tool_name == "execute_code_file":
+                            if "error" in str(tool_output).lower():
+                                self.consecutive_script_failures += 1
+                                logger.warning(
+                                    f"       ❌ Script execution failed ({self.consecutive_script_failures}/{self.max_script_failures})")
+
+                                if self.consecutive_script_failures >= self.max_script_failures:
+                                    logger.error(
+                                        f"       🔄 Script failed {self.max_script_failures} times - triggering restart")
+                                    self.force_restart_now = True
+                                    return "RESTART_TRIGGERED"
+                            else:
+                                self.consecutive_script_failures = 0
+                                logger.info(f"       ✅ Script executed successfully - reset failure counter")
+
+                        logger.info(f"       {success_indicator} {agent_name} tool {tool_name} completed")
+                        logger.info(f"       📤 Result: {str(tool_output)[:100]}...")
+
+                    elif kind == "on_chain_end":
+                        chain_name = event.get('name', 'unknown')
+                        output = event['data'].get('output', '')
+                        logger.info(f"       🎯 {agent_name} chain completed: {chain_name}")
+
+                        if isinstance(output, dict) and 'messages' in output:
+                            last_message = output['messages'][-1] if output['messages'] else None
+                            if last_message and hasattr(last_message, 'content'):
+                                agent_response = last_message.content
+                        elif hasattr(output, 'content'):
+                            agent_response = output.content
+                        elif isinstance(output, str):
+                            agent_response = output
+
+            finally:
+                inactivity_task.cancel()
+                try:
+                    await inactivity_task
+                except asyncio.CancelledError:
+                    pass
+
+            logger.info(f"     ✅ {agent_name} finished speaking")
+            logger.info(f"     🔧 Tools used: {', '.join(tool_calls_made) if tool_calls_made else 'None'}")
+            logger.info(f"     📄 Response length: {len(agent_response)} characters")
+
+            return agent_response or f"{agent_name} completed turn {turn} (no response captured)"
+
+        except asyncio.TimeoutError:
+            logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
+            logger.error(f"     🔄 This will trigger a restart of the address matching process")
+            cleanup_directories()
+            raise Exception(
+                f"{agent_name} timed out after {timeout_seconds} seconds of inactivity - restarting address matching")
+        except Exception as e:
+            logger.error(f"     ❌ {agent_name} error: {str(e)}")
+            return f"{agent_name} error on turn {turn}: {str(e)}"
 
 
 class ExtractionGeneratorEvaluatorPair:
@@ -82,6 +833,116 @@ class ExtractionGeneratorEvaluatorPair:
         self.max_conversation_turns = 20  # More turns for 3 agents
         self.shared_checkpointer = InMemorySaver()  # Shared between all agents
         self.shared_thread_id = "extraction-conversation-1"  # Same thread for all
+        self.consecutive_script_failures = 0
+        self.max_script_failures = 3
+
+    def canonicalize_cli_errors(self, cli_errors: str) -> str:
+        """Simple canonicalization: extract file paths and normalize them"""
+
+        # Parse the CLI errors to extract file paths
+        error_files = set()
+
+        # Check if submit_errors.csv exists (the actual CLI error format)
+        submit_errors_path = os.path.join(BASE_DIR, "submit_errors.csv")
+
+        if os.path.exists(submit_errors_path):
+            try:
+                df = pd.read_csv(submit_errors_path)
+                for _, row in df.iterrows():
+                    file_path = row['file_path']
+                    # Extract just the property folder name from the path
+                    # e.g., "submit/property_123/property.json" -> "property_123"
+                    parts = file_path.split('/')
+                    if len(parts) >= 2:
+                        property_folder = parts[-2]  # Get the folder name
+                        error_files.add(property_folder)
+            except Exception as e:
+                logger.warning(f"Could not parse submit_errors.csv: {e}")
+
+        # If no CSV, try to extract from error text
+        if not error_files:
+            lines = cli_errors.split('\n')
+            for line in lines:
+                if 'File:' in line:
+                    file_path = line.replace('File:', '').strip()
+                    # Extract property folder from path
+                    parts = file_path.split('/')
+                    if len(parts) >= 2:
+                        property_folder = parts[-2]
+                        error_files.add(property_folder)
+
+        # Sort the property folders for consistent ordering
+        canonical_errors = sorted(list(error_files))
+
+        # Create simple canonical string
+        canonical_string = json.dumps(canonical_errors, sort_keys=True)
+
+        # Return hash
+        return hashlib.md5(canonical_string.encode()).hexdigest()
+
+    def _should_restart_generation(self, current_error_details: str) -> bool:
+        """Check if we should restart based on canonicalized file paths"""
+
+        # Get canonical hash of current errors
+        current_error_hash = self.canonicalize_cli_errors(current_error_details)
+
+        # Check if it's the same as last error
+        if self.state['last_error_hash'] == current_error_hash:
+            self.state['consecutive_same_errors'] += 1
+        else:
+            self.state['consecutive_same_errors'] = 1
+            self.state['last_error_hash'] = current_error_hash
+
+        # Log for debugging
+        logger.info(f"🔍 Canonical error hash: {current_error_hash}")
+        logger.info(f"🔢 Consecutive same errors: {self.state['consecutive_same_errors']}")
+
+        # Restart after 3 consecutive same errors
+        if (self.state['consecutive_same_errors'] > 4 and
+                self.state['generation_restart_count'] < self.state['max_generation_restarts']):
+            logger.warning(f"🔄 Same file path errors detected {self.state['consecutive_same_errors']} times")
+            return True
+
+        return False
+
+    def _update_error_tracking(self, error_hash: str, error_details: str):
+        """Update error tracking state"""
+        if self.state['last_error_hash'] == error_hash:
+            self.state['consecutive_same_errors'] += 1
+        else:
+            self.state['consecutive_same_errors'] = 1
+            self.state['last_error_hash'] = error_hash
+
+        # Keep history of recent errors (last 10)
+        self.state['error_history'].append(error_details)
+        if len(self.state['error_history']) > 10:
+            self.state['error_history'] = self.state['error_history'][-10:]
+
+    async def _restart_generation_process(self) -> WorkflowState:
+        """Restart the generation process with a fresh thread"""
+        logger.info("🔄 RESTARTING GENERATION PROCESS - Creating new thread and agents")
+
+        cleanup_directories()
+        self.state['last_agent_activity'] = 0
+        # Increment restart counter
+        self.state['generation_restart_count'] += 1
+
+        # Create new thread ID for fresh start
+        self.shared_thread_id = f"extraction-conversation-restart-{self.state['generation_restart_count']}"
+        self.shared_checkpointer = InMemorySaver()  # Fresh checkpointer
+
+        # Reset conversation state
+        self.max_conversation_turns = 20  # Reset turn counter
+
+        # Reset error tracking for new attempt
+        self.state['consecutive_same_errors'] = 0
+        self.state['last_error_hash'] = ""
+
+        logger.info(f"🆕 Starting fresh generation attempt #{self.state['generation_restart_count']}")
+        logger.info(f"🆕 New thread ID: {self.shared_thread_id}")
+
+        # Start the conversation loop again from the beginning
+        return await self.run_feedback_loop()
 
     async def run_feedback_loop(self) -> WorkflowState:
         """Run FOUR AGENTS: Generator + Schema Evaluator + Data Evaluator + CLI Validator"""
@@ -106,50 +967,62 @@ class ExtractionGeneratorEvaluatorPair:
             agent=generator_agent,
             agent_name="GENERATOR",
             turn=1,
-            user_instruction="Start by creating the extraction script and processing all input files"
+            user_instruction="Start by creating the extraction script and processing all input files, Make sure to extract all sales-taxes-layouts data  "
         )
 
         # Continue conversation until all evaluators accept or max turns
         while conversation_turn < self.max_conversation_turns:
             conversation_turn += 1
 
-            logger.info(f"💬 Conversation Turn {conversation_turn}/{self.max_conversation_turns}")
+            if hasattr(self, 'force_restart_now') and self.force_restart_now:
+                logger.warning("🔄 Script failure restart triggered - restarting now")
+                self.force_restart_now = False  # Reset flag
+                return await self._restart_generation_process()
 
-            # # SCHEMA EVALUATOR RESPONDS
-            # logger.info("🔍 Schema Evaluator reviews Generator's work...")
-            # schema_message = await self._agent_speak(
-            #     agent=schema_evaluator_agent,
-            #     agent_name="SCHEMA_EVALUATOR",
-            #     turn=conversation_turn,
-            #     user_instruction="Review the Generator's extraction work and validate schema compliance"
-            # )
-            #
-            # schema_accepted = "STATUS: ACCEPTED" in schema_message
-            # logger.info(f"📊 Schema Evaluator decision: {'ACCEPTED' if schema_accepted else 'NEEDS FIXES'}")
+            if should_restart_due_to_timeout(self.state):
+                logger.warning("⏰ Agent timeout detected - restarting generation process")
+                return await self._restart_generation_process()
+
+            logger.info(f"💬 Conversation Turn {conversation_turn}/{self.max_conversation_turns}")
 
             # DATA EVALUATOR RESPONDS
             logger.info("📊 Data Evaluator reviews Generator's work...")
-            data_message = await self._agent_speak(
-                agent=data_evaluator_agent,
-                agent_name="DATA_EVALUATOR",
-                turn=conversation_turn,
-                user_instruction="Review the Generator's extraction work and validate data completeness by comparing with sample input files and make sure validation points are met"
-            )
+            try:
+                # Your existing agent calls with timeout protection
+                data_message = await self._agent_speak(
+                    agent=data_evaluator_agent,
+                    agent_name="DATA_EVALUATOR",
+                    turn=conversation_turn,
+                    user_instruction="Review and evaluate the Generator's extraction work all over Again even if you already accepted it in previous run and validate data completeness by comparing with sample input files and make sure validation points are met, pick 3 different samples to compare, if you already accepted, check again for any new issues that might have been introduced by the generator",
+                )
+            except Exception as e:
+                if "timed out" in str(e):
+                    logger.warning("⏰ Agent timeout during DATA_EVALUATOR - restarting")
+                    return await self._restart_generation_process()
+                raise
 
             data_accepted = "STATUS: ACCEPTED" in data_message
             logger.info(f"📊 Data Evaluator decision: {'ACCEPTED' if data_accepted else 'NEEDS FIXES'}")
 
             # CLI VALIDATOR RUNS (non-LLM function)
             logger.info("⚡ CLI Validator running validation...")
-            cli_success, cli_errors = run_cli_validator("data")
+            cli_success, cli_errors, _ = run_cli_validator("data")  # Note: 3 return values now
 
             if cli_success:
                 cli_message = "STATUS: ACCEPTED - CLI validation passed successfully"
                 cli_accepted = True
+                self.state['consecutive_same_errors'] = 0
+                self.state['last_error_hash'] = ""
                 logger.info("✅ CLI Validator decision: ACCEPTED")
             else:
                 cli_message = f"STATUS: REJECTED - CLI validation failed with errors:\n{cli_errors}"
                 cli_accepted = False
+
+                # Check if we should restart due to repeated file path errors
+                if self._should_restart_generation(cli_errors):
+                    logger.warning("🔄 Same file path errors detected 3 times - restarting generation process")
+                    return await self._restart_generation_process()
+
                 logger.info("❌ CLI Validator decision: NEEDS FIXES")
 
             # Check if ALL validators accepted
@@ -181,8 +1054,8 @@ class ExtractionGeneratorEvaluatorPair:
                 YOU MUST:
                     1. Use the filesystem tools to read/modify the extraction script
                     2. You MUST understand all the root causes of the errors to update data_extraction.py script to fix th extraction errors
-                    2. Fix ALL the specific errors mentioned above
-                    3. Test your changes by running the script
+                    3. Fix ALL the specific errors mentioned above
+                    4. run the script 
 
                 DO NOT just acknowledge - TAKE ACTION NOW with tools to fix these issues.""")
 
@@ -209,111 +1082,50 @@ class ExtractionGeneratorEvaluatorPair:
             🎯 YOUR MISSION: Process ALL {self.state['input_files_count']} files from ./input/ folder 
 
             📂 REQUIRED OUTPUT STRUCTURE: this output should be generated through a data_extraction.py script
+            if any file don't have data, DO NOT create it, example: if input data don't have flood_storm_information don't create this file
             ./data/[property_parcel_id]/property.json
-            ./data/[property_parcel_id]/address.json
+            ./data/[property_parcel_id]/address.json use owners/addresses_mapping.json in address extraction along with the input file
             ./data/[property_parcel_id]/lot.json
-            ./data/[property_parcel_id]/sales_1.json
+            ./data/[property_parcel_id]/sales_1.json 
             ./data/[property_parcel_id]/tax_1.json
-            ./data/[property_parcel_id]/layout_1.json (It represents number of space_type inside the property) you need to know what space_type you have from the schema and apply them  if found in the property data
+            ./data/[property_parcel_id]/layout_1.json (It represents number of space_type inside the property) you need to know what space_type you have from the schema and apply them  if found in the property data, Layouts for ALL (bedrooms, full and half bathrooms) must be extracted into distinct layout objects. E.g., 2 beds, 1 full, 1 half bath = 4 layout files.)
             ./data/[property_parcel_id]/flood_storm_information.json
-            ./data/[property_parcel_id]/person.json   or ./data/[property_parcel_id]/company.json
-            Script must be able to identify if the owner is a (company or organization name) or (a person) 
+            ./data/[property_parcel_id]/person.json   or ./data/[property_parcel_id]/company.json extract person/company data from owners/owners_schema.json file
             and if multiple persons you should have 
             ./data/[property_parcel_id]/person_1.json
             ./data/[property_parcel_id]/person_2.json
+            same for company, if there is multiple persons or companies, create multiple files with suffixes.
 
-            if there is multiple sales or layouts, create multiple files with suffixes:
-            ./data/[property_parcel_id]/sales_1.json
-            ./data/[property_parcel_id]/sales_2.json
-            ./data/[property_parcel_id]/layout_1.json
-            ./data/[property_parcel_id]/flood_storm_information.json
-
-
-            🔗 RELATIONSHIP FILES MAPPING:
-            Create relationship files with these exact structures:
-
-            relationship_person_property.json (person → property) or relationship_company_property.json (company → property):
-            {{
-                "from": {{
-                    "/": "./person.json"
-                }},
-                "to": {{
-                    "/": "./property.json"
-                }}
-            }}
-            or 
-            {{
-                "from": {{
-                    "/": "./company.json"
-                }},
-                "to": {{
-                    "/": "./property.json"
-                }}
-            }}
-
-            relationship_property_address.json (property → address):
-            {{
-                "from": {{
-                    "/": "./property.json"
-                }},
-                "to": {{
-                    "/": "./address.json"
-                }}
-            }}
-
-            and so on , until you create relationship files for :
-                relationship_person_property.json (person → property)
-                relationship_property_address.json (property → address)
-                relationship_property_lot.json (property → lot)
-                relationship_property_tax_1.json (property → tax_1)
-                relationship_property_tax_2.json (property → tax_2)
-                relationship_property_sales_1.json(property → sales_1)
-                relationship_property_sales_2.json(property → sales_2)
-                relationship_property_layout_1.json (property → layout_1)
-                relationship_property_layout_2.json (property → layout_2)
-                relationship_property_flood_storm_information.json (property → flood_storm_information)
-                and so on ...
-
-            Then create a file named county_data_group.json in IPLD format following the data_group.json schema For each property
-            to add all the relationships relative path inside data_group.json For each property, you should have a county_data_group.json file
-            as example: 
-                {{
-                  "label": "County",
-                  "relationships": {{
-                    "person_has_property": [
-                      {{
-                        "/": "./relationship_Jason_property.json"
-                      }},
-                      {{
-                        "/": "./relationship_Miryam_property.json"
-                      }}
-                    ]
-                    }} AND SO ON
-                }}
-
-
+            ⚠️ Generator should detect and extract address components and set them correctly in address class:
+                - street_number
+                - street_name
+                - unit_identifier
+                - plus_four_postal_code
+                - street_post_directional_text
+                - street_pre_directional_text
+                - street_suffix_type
 
             📋 SCHEMAS TO FOLLOW:
-            All schemas are available in the ./schemas/ directory. Read each schema file to understand the required structure
+            All schemas are available in the ./schemas/ directory. Read each schema file to understand the required structure, you MUST follow the exact structure provided in the schemas.
 
             🔧 YOUR TASKS:
             1. READ all schema files from ./schemas/ directory to understand data structures
             2. Analyze input structure (examine 3-5 sample files)
-            3. Generate a universal extraction script: `scripts/data_extractor.py` that Map html data to the schemas, and save the extracted data as JSON files in the `data` folder.
-            4. Execute the script to process ALL input files
-            5. Compare 50 samples of extracted data with the corresponding input file to make sure if ALL data is extracted successfully
-            6. IMPORTANT: If NOT all data is extracted successfully, modify the `html_data_extractor.py` script to fix the extraction logic and re-execute the script.
+            3. Analyze the owners data from owners/owners_schema.json to understand how to extract person/company data
+            4. Analyze the address structure in the owners/addresses_mapping.json to use in extraction process
+            4. Generate a universal extraction script: `scripts/data_extractor.py` that Map input data to the schemas, and save the extracted data as JSON files in the `data` folder.
+            5. The script MUST be execeutable and you MUST NOT QUITE until the script is executed successfully with No errors
+            6. Execute the script to process ALL input files
+            7. MAKE SURE script is executable and can be run without errors
+            8. data could have Either persons or company, but not both, if persons is present then company should be null and vice versa
 
             ⚠️ CRITICAL RULES:
-            - Process EVERY input file in ./input/ directory
-            - DONOT QUITE until extraction script generates county_data_group.json following schema above with label 
-            - Create exactly JSON files per property
+            - Process 10 input file in ./input/ directory
             - Follow the exact schema structure provided
             - Handle missing data gracefully (use null/empty values)
-            - Log progress and errors clearly
 
             🗣️ CONVERSATION RULES:
-            - You are having a conversation with THREE VALIDATORS: Schema Evaluator, Data Evaluator, and CLI Validator
+            - You are having a conversation with TWO VALIDATORS: Data Evaluator, and CLI Validator
             - When ANY validator gives you feedback, read it carefully and work in silent to fix the issues
             - Fix the specific issues they mention in silence
 
@@ -327,106 +1139,73 @@ class ExtractionGeneratorEvaluatorPair:
             checkpointer=self.shared_checkpointer
         )
 
-    # async def _create_schema_evaluator_agent(self):
-    #     """Create Schema Evaluator agent - validates schema compliance"""
-    #
-    #     schema_evaluator_prompt = f"""
-    #     You are the SCHEMA EVALUATOR for input extraction validation in a conversation with a GENERATOR and DATA EVALUATOR.
-    #
-    #     🔍 YOUR MISSION: Validate schema compliance and JSON structure
-    #
-    #     📋 VALIDATION TASKS:
-    #         1. CREATE A COMPREHENSIVE VALIDATION SCRIPT: scripts/schema_validator.py
-    #         2. The script must:
-    #            - Check that ./data/ contains {self.state['input_files_count']} property folders
-    #            - Verify each property has all required JSON files
-    #            - Validate each JSON file against its schema using jsonschema library
-    #            - Test data format correctness and schema compliance
-    #            - Generate detailed validation report
-    #            - Make sure no missing Attributes inside the JSON files, any missing Attributes should be represented as null
-    #
-    #         3. EXECUTE the validation script
-    #         4. ANALYZE the results and provide specific feedback
-    #     📊 SCHEMAS TO VALIDATE AGAINST:
-    #         All schemas are located in ./schemas/ directory. Your validation script should:
-    #         1. Read schema files from ./schemas/ directory
-    #         2. Use jsonschema library to validate each extracted JSON file
-    #         3. Check schema compliance for all data files
-    #         4. Verify JSON structure and data types
-    #
-    #     📝 RESPONSE FORMAT:
-    #     Start with: STATUS: ACCEPTED or STATUS: REJECTED
-    #
-    #     Then explain:
-    #         - Schema compliance results
-    #         - JSON structure issues
-    #         - Data type validation errors
-    #         - Specific schema fixes needed
-    #
-    #
-    #     🗣️ CONVERSATION RULES:
-    #     - You focus ONLY on schema compliance and JSON structure
-    #     - Reference what the GENERATOR did in your responses
-    #     - Give specific feedback about schema violations
-    #     - Don't worry about data completeness - that's the Data Evaluator's job
-    #
-    #     🚀 START: Check schema compliance and give your feedback.
-    #     """
-    #
-    #     return create_react_agent(
-    #         model=self.model,
-    #         tools=self.tools,
-    #         prompt=schema_evaluator_prompt,
-    #         checkpointer=self.shared_checkpointer
-    #     )
-
     async def _create_data_evaluator_agent(self):
         """Create Data Evaluator agent - validates data completeness"""
 
         data_evaluator_prompt = f"""
-        You are the DATA EVALUATOR for input extraction validation in a conversation with a GENERATOR and SCHEMA EVALUATOR,Your very restricted about your Validation.
+            You are the DATA EVALUATOR in a multi-agent data extraction pipeline rseponsible for VALIDATION CHECKLIST execution. You work alongside:
 
-        🔍 YOUR MISSION: Validate data completeness and accuracy check the extraction script if there is any TODO ask the generator to fix
-        CRITICAL: DONOT ACCEPT IF county_data_group.json file not found in each property
-        your job is :
-        Take sample of 3-5 properties from ./data/ directory and the corresponding files from ./input/ directory and check if the extraction script is generated You should accept the data unless all the following criteria are met you should know if it met or now by comparing the extracted data with the original input files:
-            1- Your job to make sure all the data has been extracted successfully by Comparing extracted data with original input files
-            2- If county_data_group.json file is missing or not in IPLD format or not following data_group.json schema ask generator to fix the script to include for each property
-            3- presence of layouts, bedrooms,fullbathrooms and half bathroom, that were extracted for all available space types example 2 bedroom, 1 full batroom and 1 half bathroom results in 4 layout files
-            4- All Tax history was extracted for all available years and Ensure no tax years were missed
-            5- All sales history was extracted for all available years and Ensure no sales years were missed
-            6- Validate all property details are captured
-            7- Check that multiple layouts/sales/persons are properly numbered
-            8- IF there is any TODO in the extraction script ask the generator to fix the script
-            9- All relationships files are being filled correctly in the county_data_group.json file, and missing relationships are being represented as null
-            10- Generator should detect company or organization name and set it correctly in company class:
-                for example:
-                    - Common corporate/legal suffixes (e.g., Inc, LLC, Ltd)
-                    - Words used in nonprofit or charity names (e.g., Foundation, Alliance, Rescue)
-                    - Words associated with service providers, government contractors, training organizations, or professional associations (e.g., Solutions, Services, Systems)
-                    - Military, emergency services, and veteran-related terms (e.g., Veterans, First Responders, Heroes)
-                    - International or advocacy organizations (e.g., Initiative, Mission, Council)
-                    
-                    
-        📝 RESPONSE FORMAT:
-        Start with: STATUS: ACCEPTED or STATUS: REJECTED
-        Answer in a concise manner, focusing on the specific data completeness and accuracy issues found.
-        
-        Then explain:
-        - Data completeness results only if the data is not complete.
-        - Missing sales/tax years only if found.
-        - Incomplete person/company data only if found.
-        - Missing layout information only if found.
-        - Specific data extraction fixes needed only if found.
+            - The GENERATOR: generates the extraction script.
+            - The SCHEMA EVALUATOR: validates JSON schema compliance (this is NOT your job).
 
-        🗣️ CONVERSATION RULES:
-        - You focus ONLY on data completeness and accuracy
-        - Reference what the GENERATOR extracted in your responses
-        - Give specific feedback about missing or incomplete data
-        - Don't worry about schema compliance - that's the Schema Evaluator's job
+            🎯 YOUR TASK:
+            You are responsible for **data completeness and accuracy validation ONLY**. You must validate that the extracted data in `./data/` matches exactly the content present in the original raw files in `./input/`.
 
-        🚀 START: Check data completeness and give your feedback.
-        """
+            You must do **side-by-side comparisons** between the original input files and the extracted output files for 3 properties as a sample.
+
+            Do NOT rely solely on output content.
+            Instead, for each field/value in the extracted JSON, find and verify it exists in the raw input file for 3 properties as a sample.
+
+            ---
+
+            🔍 YOUR VALIDATION FLOW:
+
+            For a **sample of 3–5 properties**:
+            1. **Locate the extracted files in `./data/`** and their **corresponding input sources in `./input/`**.
+            2. For each extracted value in data/[property_parcel_id]/**:
+               - **Find the matching information in the original input**.
+               - **Reject** if any value cannot be verified from the input.
+
+            ✅ VALIDATION CHECKLIST: you must ensure the following criteria are met one by one everytime:
+            1. Full data coverage: All information present in the input file must be extracted in county_data_group.json.
+            2. Layouts for ALL (bedrooms, full and half bathrooms) must be extracted into distinct layout objects. E.g., 2 beds, 1.5 bathroom = 4 layout files (2 beds, 1 full bathroom, 1 half bathroom).
+            3. Tax history must include ALL years from the input. No years should be missing starting from 2025
+            4. Sales history must include ALL years from the input for this PARCEL ID ONLY. No years should be missing, DO NOT INCLUDE SALES OF SUBDIVISON.
+            5. All essential property details must be present (e.g., parcel ID, zoning, square footage, etc.).
+            6. Layouts, persons, and sales must be correctly numbered (e.g., layout_1, layout_2, person_1, etc.).
+            7. No TODO placeholders allowed in the extraction script. Request fixes immediately.
+            8. json files that have all data as null or empty should be removed from the data folder.
+            9. Address is correctly extracted with all components:
+                - street_number
+                - street_name
+                - unit_identifier
+                - plus_four_postal_code
+                - street_post_directional_text
+                - street_pre_directional_text
+                - street_suffix_type
+
+            📝 RESPONSE FORMAT:
+            Start your response with one of the following:
+            STATUS: ACCEPTED
+            or
+            STATUS: REJECTED
+
+            Then explain only what is necessary:
+            - Data completeness issues: <Only if incomplete>
+            - Missing tax/sales years: <Only if found>
+            - Incomplete person/company classification: <Only if found>
+            - Missing layout information: <Only if found>
+            - Script issues or TODOs: <Only if found>
+
+            🗣️ CONVERSATION RULES:
+            - You only care about data completeness and extraction accuracy.
+            - You do NOT evaluate schema compliance (that’s the SCHEMA EVALUATOR’s job).
+            - You must reference the GENERATOR’s extracted outputs when pointing out problems.
+            - Be strict. Accept only if ALL criteria are clearly met.
+            - reply only with the STATUS and the issues found, do not reply with anything else, just reply with the issues found, if any.
+
+            🚀 START: Check data completeness and return your evaluation.
+            """
 
         return create_react_agent(
             model=self.model,
@@ -438,259 +1217,8 @@ class ExtractionGeneratorEvaluatorPair:
     async def _agent_speak(self, agent, agent_name: str, turn: int, user_instruction: str) -> str:
         """Have an agent speak in the conversation - they see all previous messages"""
 
-        logger.info(f"     🗣️ {agent_name} speaking (Turn {turn})...")
-        logger.info(f"     👀 {agent_name} using shared checkpointer memory")
-
-        config = {
-            "configurable": {"thread_id": self.shared_thread_id},  # SAME THREAD!
-            "recursion_limit": 100
-        }
-
-        # Agent sees the FULL conversation history + current instruction
-        messages = [{
-            "role": "user",
-            "content": user_instruction
-        }]
-
-        logger.info(f"     📖 {agent_name} using checkpointer memory...")
-
-        agent_response = ""
-        tool_calls_made = []
-
-        try:
-            # Stream the agent's speech with full logging
-            async for event in agent.astream_events({"messages": messages}, config, version="v1"):
-                kind = event["event"]
-
-                if kind == "on_chain_start":
-                    logger.info(f"       🔗 {agent_name} chain starting: {event.get('name', 'unknown')}")
-
-                elif kind == "on_llm_start":
-                    logger.info(f"       🧠 {agent_name} thinking...")
-
-                elif kind == "on_llm_end":
-                    llm_output = event['data'].get('output', '')
-                    if hasattr(llm_output, 'content'):
-                        content = llm_output.content[:200] + "..." if len(
-                            llm_output.content) > 200 else llm_output.content
-                        logger.info(f"       💭 {agent_name} decided: {content}")
-
-                elif kind == "on_tool_start":
-                    tool_name = event['name']
-                    tool_input = event['data'].get('input', {})
-                    logger.info(f"       🔧 {agent_name} using tool: {tool_name}")
-                    logger.info(f"       📝 Tool input: {str(tool_input)[:150]}...")
-                    tool_calls_made.append(tool_name)
-
-                elif kind == "on_tool_end":
-                    tool_name = event['name']
-                    tool_output = event['data'].get('output', '')
-                    success_indicator = "✅" if "error" not in str(tool_output).lower() else "❌"
-                    logger.info(f"       {success_indicator} {agent_name} tool {tool_name} completed")
-                    logger.info(f"       📤 Result: {str(tool_output)[:100]}...")
-
-                elif kind == "on_chain_end":
-                    chain_name = event.get('name', 'unknown')
-                    output = event['data'].get('output', '')
-                    logger.info(f"       🎯 {agent_name} chain completed: {chain_name}")
-
-                    # Capture the agent's response
-                    if isinstance(output, dict) and 'messages' in output:
-                        last_message = output['messages'][-1] if output['messages'] else None
-                        if last_message and hasattr(last_message, 'content'):
-                            agent_response = last_message.content
-                    elif hasattr(output, 'content'):
-                        agent_response = output.content
-                    elif isinstance(output, str):
-                        agent_response = output
-
-            logger.info(f"     ✅ {agent_name} finished speaking")
-            logger.info(f"     🔧 Tools used: {', '.join(tool_calls_made) if tool_calls_made else 'None'}")
-            logger.info(f"     📄 Response length: {len(agent_response)} characters")
-            logger.info(f"     🗨️ {agent_name} said: {agent_response}...")
-
-            return agent_response or f"{agent_name} completed turn {turn} (no response captured)"
-
-        except Exception as e:
-            logger.error(f"     ❌ {agent_name} error: {str(e)}")
-            return f"{agent_name} error on turn {turn}: {str(e)}"
-
-
-class AddressMatchingGeneratorEvaluatorPair:
-    """Generator and Evaluator for address matching node with CLI validation"""
-
-    def __init__(self, state: WorkflowState, model, tools):
-        self.state = state
-        self.model = model
-        self.tools = tools
-        self.max_conversation_turns = 15  # Fewer turns since this is simpler than extraction
-        self.shared_checkpointer = InMemorySaver()  # Shared between agents
-        self.shared_thread_id = "address-matching-conversation-1"  # Same thread for all
-
-    async def run_feedback_loop(self) -> WorkflowState:
-        """Run TWO AGENTS: Generator + CLI Validator"""
-
-        logger.info("🔄 Starting Generator + CLI Validator CONVERSATION for Address Matching")
-        logger.info(f"💬 Using shared thread: {self.shared_thread_id}")
-        logger.info(f"🎭 Two agents: Address Generator, CLI Validator")
-
-        # Create the generator agent
-        generator_agent = await self._create_address_generator_agent()
-
-        conversation_turn = 0
-        cli_accepted = False
-
-        # GENERATOR STARTS: Create initial address matching script
-        logger.info("🤖 Address Generator starts the conversation...")
-
-        await self._agent_speak(
-            agent=generator_agent,
-            agent_name="ADDRESS_GENERATOR",
-            turn=1,
-            user_instruction="Start by creating the address matching script and processing all properties"
-        )
-
-        # Continue conversation until CLI validator accepts or max turns
-        while conversation_turn < self.max_conversation_turns:
-            conversation_turn += 1
-
-            logger.info(f"💬 Conversation Turn {conversation_turn}/{self.max_conversation_turns}")
-
-            # CLI VALIDATOR RUNS (non-LLM function)
-            logger.info("⚡ CLI Validator running validation...")
-            cli_success, cli_errors = run_cli_validator("processed")
-
-            if cli_success:
-                cli_message = "STATUS: ACCEPTED - CLI validation passed successfully"
-                cli_accepted = True
-                logger.info("✅ CLI Validator decision: ACCEPTED")
-                break
-            else:
-                cli_message = f"STATUS: REJECTED - CLI validation failed with errors:\n{cli_errors}"
-                cli_accepted = False
-                logger.info("❌ CLI Validator decision: NEEDS FIXES")
-
-            # GENERATOR RESPONDS: Sees feedback from CLI validator and fixes issues
-            logger.info("🤖 Address Generator responds to CLI validator feedback...")
-
-            await self._agent_speak(
-                agent=generator_agent,
-                agent_name="ADDRESS_GENERATOR",
-                turn=conversation_turn + 1,
-                user_instruction=f"update address_extraction.py to fix issues found by CLI validator immediately. Work silently to Fix these specific issues:\n\n{cli_message}"
-            )
-
-            logger.info(f"🔄 Turn {conversation_turn} complete, continuing conversation...")
-
-        # Conversation ended
-        final_status = "ACCEPTED" if cli_accepted else "PARTIAL"
-
-        if final_status != "ACCEPTED":
-            logger.warning(
-                f"⚠️ Address matching conversation ended without full success after {self.max_conversation_turns} turns")
-            logger.warning(f"CLI: {'✅' if cli_accepted else '❌'}")
-            self.state['all_addresses_matched'] = False
-        else:
-            self.state['address_matching_complete'] = True
-            self.state['all_addresses_matched'] = True
-
-        logger.info(f"💬 Address matching conversation completed with status: {final_status}")
-        return self.state
-
-    async def _create_address_generator_agent(self):
-        """Create Address Generator agent with your exact original prompt"""
-
-        generator_prompt = f"""
-        You are an address matching specialist handling the final phase of property data processing.
-
-        🔄 CURRENT STATUS:
-            ✅ Data extraction: COMPLETE - All {self.state['input_files_count']} properties are in ./data/ directory
-            🎯 Current task: Match addresses and move properties to ./processed/
-            🔁 Attempt: {self.state['retry_count'] + 1} of {self.state['max_retries']}
-
-        📂 FILE STRUCTURE:
-            • ./data/[property_parcel_id]/address.json - Properties needing address matching
-            • ./possible_addresses/[property_parcel_id].json - Address candidates for each property
-            • ./input/[property_parcel_id] file - Source input data for address extraction
-            • ./processed/[property_parcel_id]/ - Final destination after successful matching
-
-        🎯 YOUR MISSION: Process ALL properties until ./data/ is empty by writing a script that matches addresses,  scripts/address_extraction.py.
-
-        PHASE 1: ANALYZE THE DATA STRUCTURE
-            1. Examine 3-5 samples from possible_addresses/ to understand:
-               - JSON format and field structure
-               - How many address candidates each property has
-               - Address format variations
-
-            2. Check corresponding input files to understand:
-               - Where addresses appear in the input
-               - How to extract: street number, street name, unit, city, zip
-
-            3. Plan your matching strategy before coding
-
-        PHASE 2: BUILD THE MATCHING SCRIPT
-            Create: scripts/address_extraction.py
-
-            The script must:
-            A. For each property in ./data/:
-               - Extract property_parcel_id from folder name
-               - Load possible_addresses/[property_parcel_id].json (candidate addresses)
-               - Parse address from input/[property_parcel_id] files
-               - Extract: street_number, street_name, unit, city, zip, directionals, suffix_type
-
-            B. Find the best address match:
-               - Compare input files address with candidates in possible_addresses/
-               - Use exact matching first, then fuzzy matching if needed
-               - Focus on: street number + street name + unit (if applicable)
-
-            C. When match found:
-               - Update address.json with matched address data using schema: {self.state['schemas']['address.json']}
-               - PRESERVE existing fields like: latitude, longitude, range, section, township
-               - Move entire folder: ./data/[property_parcel_id]/ → ./processed/[property_parcel_id]/
-
-            D. Handle failures:
-               - Log properties that couldn't be matched
-               - Continue processing other properties
-
-        PHASE 3: EXECUTE AND ITERATE
-            1. Run the script on ALL properties
-            2. Track progress: "Processed X of {self.state['input_files_count']} properties"
-            3. For failed matches:
-               - Analyze why matching failed
-               - Improve the script logic
-               - Re-run on failed cases
-            4. Repeat until ./data/ directory is completely empty
-
-        SUCCESS CRITERIA:
-            ✅ ./data/ directory is empty (all folders moved to ./processed/)
-            ✅ All address.json files have proper address data
-            ✅ No data loss (preserve existing non-address fields)
-
-        EXECUTION RULES:
-            • Process systematically, one property at a time
-            • Report progress regularly
-            • Handle errors gracefully and continue
-            • Don't stop until ALL properties are processed
-            • Focus ONLY on address matching (extraction is already done)
-
-        🗣️ CONVERSATION RULES (ADDED FOR VALIDATION):
-            - You are now in a conversation with a CLI VALIDATOR
-            - When CLI validator gives you feedback, read it carefully and work silently to fix the issues
-            - Fix the specific issues they mention and continue working
-            - The CLI validator will check if your address matching is working correctly
-
-        START with data analysis, then build the script, then execute until complete.
-        """
-
-        return create_react_agent(
-            model=self.model,
-            tools=self.tools,
-            prompt=generator_prompt,
-            checkpointer=self.shared_checkpointer
-        )
-
-    async def _agent_speak(self, agent, agent_name: str, turn: int, user_instruction: str) -> str:
-        """Have an agent speak in the conversation - they see all previous messages"""
+        # Update activity at start
+        update_agent_activity(self.state)
 
         logger.info(f"     🗣️ {agent_name} speaking (Turn {turn})...")
         logger.info(f"     👀 {agent_name} using shared checkpointer memory")
@@ -712,51 +1240,100 @@ class AddressMatchingGeneratorEvaluatorPair:
         tool_calls_made = []
 
         try:
-            # Stream the agent's speech with full logging
-            async for event in agent.astream_events({"messages": messages}, config, version="v1"):
-                kind = event["event"]
+            # Get timeout from state
+            timeout_seconds = self.state['agent_timeout_seconds']
 
-                if kind == "on_chain_start":
-                    logger.info(f"       🔗 {agent_name} chain starting: {event.get('name', 'unknown')}")
+            # Track activity for inactivity timeout
+            last_activity = time.time()
 
-                elif kind == "on_llm_start":
-                    logger.info(f"       🧠 {agent_name} thinking...")
+            async def check_inactivity():
+                """Check for inactivity timeout in background"""
+                nonlocal last_activity
+                while True:
+                    await asyncio.sleep(10)  # Check every 10 seconds
+                    current_time = time.time()
+                    if current_time - last_activity > timeout_seconds:
+                        logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
+                        raise asyncio.TimeoutError(f"{agent_name} inactive for {timeout_seconds} seconds")
 
-                elif kind == "on_llm_end":
-                    llm_output = event['data'].get('output', '')
-                    if hasattr(llm_output, 'content'):
-                        content = llm_output.content[:200] + "..." if len(
-                            llm_output.content) > 200 else llm_output.content
-                        logger.info(f"       💭 {agent_name} decided: {content}")
+            # Start the inactivity checker
+            inactivity_task = asyncio.create_task(check_inactivity())
 
-                elif kind == "on_tool_start":
-                    tool_name = event['name']
-                    tool_input = event['data'].get('input', {})
-                    logger.info(f"       🔧 {agent_name} using tool: {tool_name}")
-                    logger.info(f"       📝 Tool input: {str(tool_input)[:150]}...")
-                    tool_calls_made.append(tool_name)
+            try:
+                async for event in agent.astream_events({"messages": messages}, config, version="v1"):
+                    # Update activity timestamp on each event
+                    last_activity = time.time()
+                    update_agent_activity(self.state)
 
-                elif kind == "on_tool_end":
-                    tool_name = event['name']
-                    tool_output = event['data'].get('output', '')
-                    success_indicator = "✅" if "error" not in str(tool_output).lower() else "❌"
-                    logger.info(f"       {success_indicator} {agent_name} tool {tool_name} completed")
-                    logger.info(f"       📤 Result: {str(tool_output)[:100]}...")
+                    kind = event["event"]
 
-                elif kind == "on_chain_end":
-                    chain_name = event.get('name', 'unknown')
-                    output = event['data'].get('output', '')
-                    logger.info(f"       🎯 {agent_name} chain completed: {chain_name}")
+                    if kind == "on_chain_start":
+                        logger.info(f"       🔗 {agent_name} chain starting: {event.get('name', 'unknown')}")
 
-                    # Capture the agent's response
-                    if isinstance(output, dict) and 'messages' in output:
-                        last_message = output['messages'][-1] if output['messages'] else None
-                        if last_message and hasattr(last_message, 'content'):
-                            agent_response = last_message.content
-                    elif hasattr(output, 'content'):
-                        agent_response = output.content
-                    elif isinstance(output, str):
-                        agent_response = output
+                    elif kind == "on_llm_start":
+                        logger.info(f"       🧠 {agent_name} thinking...")
+
+                    elif kind == "on_llm_end":
+                        llm_output = event['data'].get('output', '')
+                        if hasattr(llm_output, 'content'):
+                            content = llm_output.content[:200] + "..." if len(
+                                llm_output.content) > 200 else llm_output.content
+                            logger.info(f"       💭 {agent_name} decided: {content}")
+
+                    elif kind == "on_tool_start":
+                        tool_name = event['name']
+                        tool_input = event['data'].get('input', {})
+                        logger.info(f"       🔧 {agent_name} using tool: {tool_name}")
+                        logger.info(f"       📝 Tool input: {str(tool_input)[:150]}...")
+                        tool_calls_made.append(tool_name)
+
+                    elif kind == "on_tool_end":
+                        tool_name = event['name']
+                        tool_output = event['data'].get('output', '')
+                        success_indicator = "✅" if "error" not in str(tool_output).lower() else "❌"
+                        if tool_name == "execute_code_file":
+                            if "error" in str(tool_output).lower():
+                                self.consecutive_script_failures += 1
+                                logger.warning(
+                                    f"       ❌ Script execution failed ({self.consecutive_script_failures}/{self.max_script_failures})")
+
+                                # TRIGGER RESTART IF TOO MANY FAILURES
+                                if self.consecutive_script_failures >= self.max_script_failures:
+                                    logger.error(
+                                        f"       🔄 Script failed {self.max_script_failures} times - triggering restart")
+                                    # Set flag to trigger restart
+                                    self.force_restart_now = True
+                                    return "RESTART_TRIGGERED"  # Return early to trigger restart
+                            else:
+                                # Reset counter on success
+                                self.consecutive_script_failures = 0
+                                logger.info(f"       ✅ Script executed successfully - reset failure counter")
+
+                        logger.info(f"       {success_indicator} {agent_name} tool {tool_name} completed")
+                        logger.info(f"       📤 Result: {str(tool_output)[:100]}...")
+
+                    elif kind == "on_chain_end":
+                        chain_name = event.get('name', 'unknown')
+                        output = event['data'].get('output', '')
+                        logger.info(f"       🎯 {agent_name} chain completed: {chain_name}")
+
+                        # Capture the agent's response
+                        if isinstance(output, dict) and 'messages' in output:
+                            last_message = output['messages'][-1] if output['messages'] else None
+                            if last_message and hasattr(last_message, 'content'):
+                                agent_response = last_message.content
+                        elif hasattr(output, 'content'):
+                            agent_response = output.content
+                        elif isinstance(output, str):
+                            agent_response = output
+
+            finally:
+                # Cancel the inactivity checker
+                inactivity_task.cancel()
+                try:
+                    await inactivity_task
+                except asyncio.CancelledError:
+                    pass
 
             logger.info(f"     ✅ {agent_name} finished speaking")
             logger.info(f"     🔧 Tools used: {', '.join(tool_calls_made) if tool_calls_made else 'None'}")
@@ -765,6 +1342,12 @@ class AddressMatchingGeneratorEvaluatorPair:
 
             return agent_response or f"{agent_name} completed turn {turn} (no response captured)"
 
+        except asyncio.TimeoutError:
+            logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
+            logger.error(f"     🔄 This will trigger a restart of the generation process")
+            cleanup_directories()
+            raise Exception(
+                f"{agent_name} timed out after {timeout_seconds} seconds of inactivity - restarting generation")
         except Exception as e:
             logger.error(f"     ❌ {agent_name} error: {str(e)}")
             return f"{agent_name} error on turn {turn}: {str(e)}"
@@ -794,6 +1377,7 @@ def fetch_schema_from_ipfs(cid):
     logger.error(f"Failed to fetch schema from IPFS CID {cid} from all gateways")
     return None
 
+
 def unescape_http_request(http_request):
     """Decode escaped characters in HTTP request strings"""
     if not http_request:
@@ -808,10 +1392,11 @@ def unescape_http_request(http_request):
 
     return unescaped
 
-def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
+
+def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
     """
     Run the CLI validation command and return results
-    Returns: (success: bool, error_details: str)
+    Returns: (success: bool, error_details: str, error_hash: str)
     """
     try:
         logger.info("📁 Creating submit directory and copying data with proper naming...")
@@ -832,7 +1417,7 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
 
         if not os.path.exists(data_dir):
             logger.error("❌ Data directory not found")
-            return False, "Data directory not found"
+            return False, "Data directory not found", ""
 
         # Read the uploadresults.csv file for mapping
         folder_mapping = {}
@@ -886,10 +1471,12 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
             logger.warning("⚠️ seed.csv not found, skipping JSON updates")
             seed_data = {}
 
-        # Copy data to submit directory with proper naming
+        # Copy data to submit directory with proper naming and build relationships
         copied_count = 0
-        renamed_files_count = 0
-        county_data_group_cid = "bafkreihnrwrxr4ummdh5tkckzf5v4o7emww7jylpjo2waf4taer3v4vhju"
+        county_data_group_cid = "bafkreia23qtrtvkbfa2emegfjpgf5esircbn5mqb7y5rmmpnqfed3v2bm4"
+
+        # NEW: Collect all relationship building errors
+        all_relationship_errors = []
 
         for folder_name in os.listdir(data_dir):
             src_folder_path = os.path.join(data_dir, folder_name)
@@ -919,7 +1506,8 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
                                 # Check if this JSON has source_http_request field
                                 if 'source_http_request' in json_data:
                                     # Update the JSON data with seed information
-                                    json_data['source_http_request'] = unescape_http_request(seed_data[folder_name]['http_request'])
+                                    json_data['source_http_request'] = unescape_http_request(
+                                        seed_data[folder_name]['http_request'])
                                     json_data['request_identifier'] = str(seed_data[folder_name]['source_identifier'])
 
                                     # Write back to file
@@ -939,20 +1527,38 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
                 else:
                     logger.warning(f"   ⚠️ No seed data found for parcel {folder_name}")
 
-                # Rename county_data_group.json file in the copied folder
-                county_file_path = os.path.join(dst_folder_path, "county_data_group.json")
-                new_file_path = os.path.join(dst_folder_path, f"{county_data_group_cid}.json")
+                # Build relationship files dynamically - MODIFIED TO CAPTURE ERRORS
+                logger.info(f"   🔗 Building relationship files for {target_folder_name}")
+                relationship_files, relationship_errors = build_relationship_files(dst_folder_path)
 
-                if os.path.exists(county_file_path):
-                    os.rename(county_file_path, new_file_path)
+                # Add any relationship errors to our collection
+                if relationship_errors:
+                    for error in relationship_errors:
+                        all_relationship_errors.append(f"Property {folder_name}: {error}")
+
+                # Only create county data group if no relationship errors
+                if not relationship_errors:
+                    # Create county data group file with all relationships
+                    county_data_group = create_county_data_group(relationship_files)
+                    county_file_path = os.path.join(dst_folder_path, f"{county_data_group_cid}.json")
+
+                    with open(county_file_path, 'w', encoding='utf-8') as f:
+                        json.dump(county_data_group, f, indent=2, ensure_ascii=False)
+
                     logger.info(
-                        f"   ✅ Renamed county_data_group.json -> {county_data_group_cid}.json in {target_folder_name}")
-                    renamed_files_count += 1
-                else:
-                    logger.warning(f"   ⚠️ county_data_group.json not found in {target_folder_name}")
+                        f"   ✅ Created {county_data_group_cid}.json with {len(relationship_files)} relationship files")
 
-        logger.info(f"✅ Copied {copied_count} folders and renamed {renamed_files_count} county_data_group.json files")
+        # NEW: Check if we have relationship errors before proceeding
+        if all_relationship_errors:
+            logger.error("❌ Relationship building errors found - returning early")
+            error_details = "Relationship Building Errors Found:\n\n"
+            for error in all_relationship_errors:
+                error_details += f"Error: {error}\n"
+            return False, error_details, ""
 
+        logger.info(f"✅ Copied {copied_count} folders and built relationship files")
+
+        # Rest of the function continues as before...
         logger.info("🔍 Running CLI validator: npx @elephant-xyz/cli validate-and-upload submit --dry-run")
 
         # Check prerequisites before running CLI validator
@@ -975,29 +1581,11 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
         else:
             logger.error("❌ Submit directory not found!")
 
-        # Try to install/check CLI tool first
-        logger.info("🔍 Checking @elephant-xyz/cli availability...")
-        try:
-            cli_check = subprocess.run(
-                ["npx", "@elephant-xyz/cli", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            if cli_check.returncode == 0:
-                logger.info(f"✅ CLI tool available: {cli_check.stdout.strip()}")
-            else:
-                logger.warning(f"⚠️ CLI tool check failed: {cli_check.stderr}")
-        except subprocess.TimeoutExpired:
-            logger.error("❌ CLI tool check timed out - network issues?")
-        except Exception as e:
-            logger.error(f"❌ CLI tool check failed: {e}")
-
         logger.info("🔍 Running CLI validator: npx @elephant-xyz/cli validate-and-upload submit --dry-run")
 
         try:
             result = subprocess.run(
-                ["npx", "-y","@elephant-xyz/cli", "validate-and-upload", "submit", "--dry-run", "--output-csv",
+                ["npx", "-y", "@elephant-xyz/cli", "validate-and-upload", "submit", "--dry-run", "--output-csv",
                  "results.csv"],
                 cwd=BASE_DIR,
                 capture_output=True,
@@ -1023,39 +1611,220 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str]:
                     # There are validation errors
                     logger.warning(f"❌ CLI validation found {len(df)} errors in submit_errors.csv")
 
+                    # Get unique error messages and extract field names from error paths
+                    unique_errors = set()
+                    for _, row in df.iterrows():
+                        error_message = row['error_message']
+                        error_path = row['error_path']
+
+                        # Extract field name from the error path (last part after the last '/')
+                        field_name = error_path.split('/')[-1]
+
+                        # Create formatted error with field name
+                        formatted_error = f"{field_name} {error_message}"
+                        unique_errors.add(formatted_error)
+
                     # Format the errors for the generator
                     error_details = "CLI Validation Errors Found:\n\n"
-                    for _, row in df.iterrows():
-                        error_details += f"Property: {row['property_cid']}\n"
-                        error_details += f"File: {row['file_path']}\n"
-                        error_details += f"Error: {row['error']}\n"
-                        error_details += f"Timestamp: {row['timestamp']}\n\n"
 
-                    return False, error_details
+                    for error in sorted(unique_errors):
+                        error_details += f"Error: {error}\n"
+
+                    return False, error_details, ""
                 else:
                     logger.info("✅ CLI validation passed - no errors in submit_errors.csv")
-                    return True, ""
+                    return True, "", ""
             except Exception as e:
                 logger.error(f"Error reading submit_errors.csv: {e}")
-                return False, f"Could not read submit_errors.csv: {e}"
+                error_details = f"Could not read submit_errors.csv: {e}"
+                error_hash = hashlib.md5(error_details.encode()).hexdigest()
+                return False, error_details, error_hash
         else:
             # No submit_errors.csv file means no errors (hopefully)
             if result.returncode == 0:
                 logger.info("✅ CLI validation passed - no submit_errors.csv file found")
-                return True, ""
+                return True, "", ""
             else:
                 logger.warning("❌ CLI validation failed")
                 error_output = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
-                return False, error_output
+                error_hash = hashlib.md5(error_output.encode()).hexdigest()
+                return False, error_output, error_hash
 
     except subprocess.TimeoutExpired:
         error_msg = "CLI validation timed out after 5 minutes"
         logger.error(error_msg)
-        return False, error_msg
+        error_hash = hashlib.md5(error_msg.encode()).hexdigest()
+        return False, error_msg, error_hash
     except Exception as e:
         error_msg = f"CLI validation error: {str(e)}"
         logger.error(error_msg)
-        return False, error_msg
+        error_hash = hashlib.md5(error_msg.encode()).hexdigest()
+        return False, error_msg, error_hash
+
+
+def build_relationship_files(folder_path: str) -> tuple[List[str], List[str]]:
+    """
+    Build relationship files based on discovered files in the folder
+    Returns: (relationship_files, errors)
+    """
+    relationship_files = []
+    errors = []
+
+    # Get all JSON files in the folder
+    json_files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
+
+    # Categorize files
+    person_files = [f for f in json_files if f.startswith('person')]
+    company_files = [f for f in json_files if f.startswith('company')]
+    property_files = [f for f in json_files if f.startswith('property')]
+    address_files = [f for f in json_files if f.startswith('address')]
+    lot_files = [f for f in json_files if f.startswith('lot')]
+    tax_files = [f for f in json_files if f.startswith('tax')]
+    sales_files = [f for f in json_files if f.startswith('sales')]
+    layout_files = [f for f in json_files if f.startswith('layout')]
+    flood_files = [f for f in json_files if f.startswith('flood_storm_information')]
+
+    # Ensure we have property.json as the main reference
+    if not property_files:
+        error_msg = "❌ No property.json file found - you must create one"
+        logger.error(error_msg)
+        errors.append(error_msg)
+        return relationship_files, errors
+
+    property_file = property_files[0]  # Should be property.json
+
+    # Build person/company to property relationships
+    for person_file in person_files:
+        rel_filename = f"relationship_{person_file.replace('.json', '')}_property.json"
+        rel_path = os.path.join(folder_path, rel_filename)
+
+        relationship_data = {
+            "from": {"/": f"./{person_file}"},
+            "to": {"/": f"./{property_file}"}
+        }
+
+        with open(rel_path, 'w', encoding='utf-8') as f:
+            json.dump(relationship_data, f, indent=2, ensure_ascii=False)
+
+        relationship_files.append(rel_filename)
+        logger.info(f"     📝 Created {rel_filename}")
+
+    for company_file in company_files:
+        rel_filename = f"relationship_{company_file.replace('.json', '')}_property.json"
+        rel_path = os.path.join(folder_path, rel_filename)
+
+        relationship_data = {
+            "from": {"/": f"./{company_file}"},
+            "to": {"/": f"./{property_file}"}
+        }
+
+        with open(rel_path, 'w', encoding='utf-8') as f:
+            json.dump(relationship_data, f, indent=2, ensure_ascii=False)
+
+        relationship_files.append(rel_filename)
+        logger.info(f"     📝 Created {rel_filename}")
+
+    # Build property to other entity relationships
+    relationship_mappings = [
+        (address_files, "address"),
+        (lot_files, "lot"),
+        (tax_files, "tax"),
+        (sales_files, "sales"),
+        (layout_files, "layout"),
+        (flood_files, "flood_storm_information")
+    ]
+
+    for files_list, entity_type in relationship_mappings:
+        for file in files_list:
+            # Extract number suffix if present (e.g., tax_1.json -> _1)
+            base_name = file.replace('.json', '')
+            if '_' in base_name:
+                suffix = '_' + base_name.split('_')[-1]
+            else:
+                suffix = ''
+
+            rel_filename = f"relationship_property_{entity_type}{suffix}.json"
+            rel_path = os.path.join(folder_path, rel_filename)
+
+            relationship_data = {
+                "from": {"/": f"./{property_file}"},
+                "to": {"/": f"./{file}"}
+            }
+
+            with open(rel_path, 'w', encoding='utf-8') as f:
+                json.dump(relationship_data, f, indent=2, ensure_ascii=False)
+
+            relationship_files.append(rel_filename)
+            logger.info(f"     📝 Created {rel_filename}")
+
+    return relationship_files, errors
+
+
+def create_county_data_group(relationship_files: List[str]) -> Dict[str, Any]:
+    """
+    Create the county data group structure based on relationship files
+    """
+    county_data = {
+        "label": "County",
+        "relationships": {}
+    }
+
+    # Initialize all possible relationships as null
+    all_relationships = {
+        "person_has_property": None,
+        "company_has_property": None,
+        "property_has_address": None,
+        "property_has_lot": None,
+        "property_has_tax": None,
+        "property_has_sales_history": None,
+        "property_has_layout": None,
+        "property_has_flood_storm_information": None,
+        "property_has_file": None
+    }
+
+    # Categorize relationship files
+    person_relationships = []
+    company_relationships = []
+    tax_relationships = []
+    sales_relationships = []
+    layout_relationships = []
+
+    for rel_file in relationship_files:
+        ipld_ref = {"/": f"./{rel_file}"}
+
+        if "person" in rel_file and "property" in rel_file:
+            person_relationships.append(ipld_ref)
+        elif "company" in rel_file and "property" in rel_file:
+            company_relationships.append(ipld_ref)
+        elif "property_address" in rel_file:
+            all_relationships["property_has_address"] = ipld_ref
+        elif "property_lot" in rel_file:
+            all_relationships["property_has_lot"] = ipld_ref
+        elif "property_tax" in rel_file:
+            tax_relationships.append(ipld_ref)
+        elif "property_sales" in rel_file:
+            sales_relationships.append(ipld_ref)
+        elif "property_layout" in rel_file:
+            layout_relationships.append(ipld_ref)
+        elif "property_flood_storm_information" in rel_file:
+            all_relationships["property_has_flood_storm_information"] = ipld_ref
+
+    # Set array relationships
+    if person_relationships:
+        all_relationships["person_has_property"] = person_relationships
+    if company_relationships:
+        all_relationships["company_has_property"] = company_relationships
+    if tax_relationships:
+        all_relationships["property_has_tax"] = tax_relationships
+    if sales_relationships:
+        all_relationships["property_has_sales_history"] = sales_relationships
+    if layout_relationships:
+        all_relationships["property_has_layout"] = layout_relationships
+
+    # Only include non-null relationships in the final output
+    county_data["relationships"] = {k: v for k, v in all_relationships.items()}
+
+    return county_data
 
 
 def load_schemas_from_ipfs(save_to_disk=True):
@@ -1119,41 +1888,134 @@ def create_stub_from_schema(schema):
 
 
 def check_extraction_complete(state: WorkflowState) -> bool:
-    """Check if all files have been processed and moved to processed folder"""
-    data_dir = os.path.join(BASE_DIR, "submit")
+    """Check if all files have been processed and data extracted"""
+    data_dir = os.path.join(BASE_DIR, "data")
 
-    # Otherwise check data
     if os.path.exists(data_dir):
         processed_count = len([d for d in os.listdir(data_dir)
                                if os.path.isdir(os.path.join(data_dir, d))])
-        logger.info(f"Processed {processed_count} out of {state['input_files_count']} properties in data directory")
+        logger.info(f"Extracted {processed_count} out of {state['input_files_count']} properties")
         return processed_count >= state['input_files_count']
 
     return False
 
 
 def check_address_matching_complete(state: WorkflowState) -> bool:
-    """Check if all addresses have been matched or moved to error"""
-    processed_dir = os.path.join(BASE_DIR, "processed")
+    """Check if address matching is complete"""
+    addresses_mapping_path = os.path.join(BASE_DIR, "owners", "addresses_mapping.json")
 
-    processed_count = 0
-    error_count = 0
+    if os.path.exists(addresses_mapping_path):
+        logger.info("Address matching complete - addresses_mapping.json exists")
+        return True
 
-    if os.path.exists(processed_dir):
-        processed_count = len([d for d in os.listdir(processed_dir)
-                               if os.path.isdir(os.path.join(processed_dir, d))])
+    logger.info("Address matching not complete - addresses_mapping.json not found")
+    return False
 
-    total_handled = processed_count + error_count
-    logger.info(f"Address matching: {processed_count} matched, {error_count} errors, "
-                f"total: {total_handled}/{state['input_files_count']}")
 
-    return total_handled >= state['input_files_count']
+async def owner_analysis_node(state: WorkflowState) -> WorkflowState:
+    """Node 1.5: Handle owner name analysis and schema generation"""
+    if state['current_node'] != 'owner_analysis':
+        state['retry_count'] = 0
+    state['current_node'] = 'owner_analysis'
+    logger.info(f"=== Starting Node 1: Owner Analysis (Attempt {state['retry_count'] + 1}) ===")
+
+    # Check if already complete
+    owners_schema_path = os.path.join(BASE_DIR, "owners", "owners_schema.json")
+    owners_extracted_path = os.path.join(BASE_DIR, "owners", "owners_extracted.json")
+
+    if os.path.exists(owners_schema_path):
+        logger.info("Owner analysis already complete - both files exist")
+        state['owner_analysis_complete'] = True
+        if os.path.exists(owners_extracted_path):
+            try:
+                os.remove(owners_extracted_path)
+                logger.info("🗑️ Cleaned up leftover temporary file: owners_extracted.json")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not delete leftover owners_extracted.json: {e}")
+
+        return state
+
+    # Create the owner analysis agent
+    owner_analysis_agent = OwnerAnalysisAgent(
+        state=state,
+        model=state['model'],
+        tools=state['tools']
+    )
+
+    try:
+        # Run the owner analysis
+        updated_state = await owner_analysis_agent.run_owner_analysis()
+
+        # Update the original state with results
+        state.update(updated_state)
+
+        if os.path.exists(owners_schema_path):
+            logger.info("✅ Owner Analysis completed successfully - Created: owners_schema.json")
+            state['owner_analysis_complete'] = True
+        else:
+            logger.warning("⚠️ Owner Analysis completed but owners_schema.json not found")
+            state['owner_analysis_complete'] = False
+
+
+    except Exception as e:
+        logger.error(f"Error in owner analysis: {e}")
+        state['owner_analysis_complete'] = False
+        state['validation_errors'].append(str(e))
+
+    return state
+
+
+async def address_matching_node(state: WorkflowState) -> WorkflowState:
+    """Enhanced Node 2: Handle address matching with generator-evaluator pattern"""
+    logger.info(
+        f"=== Starting Node 2: Address Matching & Validation with Evaluator (Attempt {state['retry_count'] + 1}) ===")
+
+    if state['current_node'] != 'address_matching':
+        state['retry_count'] = 0
+    state['current_node'] = 'address_matching'
+
+    # Check if already complete
+    if check_address_matching_complete(state):
+        logger.info("Address matching already complete, skipping to next node")
+        state['address_matching_complete'] = True
+        state['all_addresses_matched'] = True
+        return state
+
+    # Create the generator-evaluator pair
+    address_gen_eval_pair = AddressMatchingGeneratorEvaluatorPair(
+        state=state,
+        model=state['model'],
+        tools=state['tools'],
+        schemas=state['schemas']
+    )
+
+    try:
+        # Run the feedback loop
+        updated_state = await address_gen_eval_pair.run_feedback_loop()
+
+        # Update the original state with results
+        state.update(updated_state)
+
+        if state['all_addresses_matched']:
+            logger.info(
+                "✅ Address Matching Generator-Evaluator completed successfully - all addresses matched and validated")
+        else:
+            logger.warning(
+                "⚠️ Address Matching Generator-Evaluator completed but not all addresses were properly matched")
+
+    except Exception as e:
+        logger.error(f"Error in address matching generator-evaluator pair: {e}")
+        state['all_addresses_matched'] = False
+        state['address_matching_complete'] = False
+        state['validation_errors'].append(str(e))
+
+    return state
 
 
 async def extraction_and_validation_node(state: WorkflowState) -> WorkflowState:
     """Enhanced Node 1: Handle data extraction with generator-evaluator pattern"""
     logger.info(
-        f"=== Starting Node 1: Data Extraction & Validation with Evaluator (Attempt {state['retry_count'] + 1}) ===")
+        f"=== Starting Node 2: Data Extraction & Validation with Evaluator (Attempt {state['retry_count'] + 1}) ===")
 
     if state['current_node'] != 'extraction':
         state['retry_count'] = 0
@@ -1194,78 +2056,81 @@ async def extraction_and_validation_node(state: WorkflowState) -> WorkflowState:
     return state
 
 
-async def address_matching_node(state: WorkflowState) -> WorkflowState:
-    """Node 2: Handle address matching with validation feedback loop"""
-    if state['current_node'] != 'address_matching':
-        state['retry_count'] = 0
-    state['current_node'] = 'address_matching'
-    logger.info(
-        f"=== Starting Node 2: Address Matching & Processing with Validation (Attempt {state['retry_count'] + 1}) ===")
+def cleanup_directories():
+    """Clean up data and submit directories before starting"""
+    directories_to_clean = ["scripts"]
 
-    # Check if already complete
-    if check_address_matching_complete(state):
-        logger.info("Address matching already complete")
-        state['address_matching_complete'] = True
-        state['all_addresses_matched'] = True
-        return state
+    for dir_name in directories_to_clean:
+        dir_path = os.path.join(BASE_DIR, dir_name)
+        if os.path.exists(dir_path):
+            shutil.rmtree(dir_path)
+            logger.info(f"🗑️ Cleaned up {dir_name} directory")
+        os.makedirs(dir_path, exist_ok=True)
+        logger.info(f"📁 Created fresh {dir_name} directory")
 
-    # Create the address matching generator-evaluator pair
-    address_gen_eval_pair = AddressMatchingGeneratorEvaluatorPair(
-        state=state,
-        model=state['model'],
-        tools=state['tools']
-    )
 
-    try:
-        # Run the feedback loop
-        updated_state = await address_gen_eval_pair.run_feedback_loop()
+def should_retry_owner_analysis(state: WorkflowState) -> str:
+    """Determine if owner analysis node should retry"""
 
-        # Update the original state with results
-        state.update(updated_state)
+    # ✅ Check for timeout first
+    if should_restart_due_to_timeout(state):
+        logger.warning("⏰ Owner analysis timeout detected - restarting")
+        state['generation_restart_count'] += 1
+        state['last_agent_activity'] = time.time()
+        return "owner_analysis"  # Restart same node
 
-        if state['all_addresses_matched']:
-            logger.info("✅ Address Generator-Validator completed successfully - all addresses matched and validated")
-        else:
-            logger.warning("⚠️ Address Generator-Validator completed but not all addresses were properly matched")
-
-    except Exception as e:
-        logger.error(f"Error in address matching generator-evaluator pair: {e}")
-        state['all_addresses_matched'] = False
-        state['validation_errors'].append(str(e))
-
-    return state
+    # Normal completion check
+    if state.get('owner_analysis_complete', False):
+        state['retry_count'] = 0  # Reset for next node
+        return "address_matching"  # Go to address matching next
+    elif state['retry_count'] < state['max_retries']:
+        state['retry_count'] += 1
+        logger.warning(f"Retrying owner analysis node (attempt {state['retry_count']}/{state['max_retries']})")
+        return "owner_analysis"
+    else:
+        logger.error("Max retries reached for owner analysis node")
+        return "address_matching"
 
 
 def should_retry_extraction(state: WorkflowState) -> str:
     """Determine if extraction node should retry"""
     if state['all_files_processed']:
-        state['retry_count'] = 0  # Reset for next node
-        return "address_matching"
+        return "end"  # Now this goes to end
     elif state['retry_count'] < state['max_retries']:
         state['retry_count'] += 1
         logger.warning(f"Retrying extraction node (attempt {state['retry_count']}/{state['max_retries']})")
         return "extraction"
     else:
         logger.error("Max retries reached for extraction node")
-        return "address_matching"
+        return "end"
 
 
 def should_retry_address_matching(state: WorkflowState) -> str:
     """Determine if address matching node should retry"""
-    if state['all_addresses_matched']:
-        return "end"
+
+    # ✅ Check for timeout first
+    if should_restart_due_to_timeout(state):
+        logger.warning("⏰ Address matching timeout detected - restarting")
+        state['generation_restart_count'] += 1
+        state['last_agent_activity'] = time.time()
+        return "address_matching"  # Restart same node
+
+    # Normal completion check
+    if state.get('address_matching_complete', False):
+        state['retry_count'] = 0  # Reset for next node
+        return "extraction"  # Go to extraction next
     elif state['retry_count'] < state['max_retries']:
         state['retry_count'] += 1
         logger.warning(f"Retrying address matching node (attempt {state['retry_count']}/{state['max_retries']})")
         return "address_matching"
     else:
         logger.error("Max retries reached for address matching node")
-        return "end"
+        return "extraction"
 
 
-async def run_two_node_workflow():
+async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
-
+    cleanup_directories()
     # Load schemas from IPFS
     logger.info("Loading schemas from IPFS and saving to ./schemas/ directory...")
     schemas, stub_files = load_schemas_from_ipfs(save_to_disk=True)
@@ -1345,30 +2210,38 @@ async def run_two_node_workflow():
         stub_files=stub_files,
         extraction_complete=False,
         address_matching_complete=False,
+        owner_analysis_complete=False,
         validation_errors=[],
         processed_properties=[],
-        current_node="extraction",
+        current_node="owner_analysis",
         tools=tools,
         model=model,
         retry_count=0,
         max_retries=3,
         all_files_processed=False,
-        all_addresses_matched=False
+        all_addresses_matched=False,
+        error_history=[],
+        consecutive_same_errors=0,
+        last_error_hash="",
+        generation_restart_count=0,
+        max_generation_restarts=2,
+        agent_timeout_seconds=300,  # 5 minutes timeout per agent operation
+        last_agent_activity=0,
     )
 
     # Create the workflow graph
     workflow = StateGraph(WorkflowState)
 
     # Add nodes
-    workflow.add_node("extraction", extraction_and_validation_node)
+    workflow.add_node("owner_analysis", owner_analysis_node)
     workflow.add_node("address_matching", address_matching_node)
+    workflow.add_node("extraction", extraction_and_validation_node)
 
-    # Add conditional edges with retry logic
     workflow.add_conditional_edges(
-        "extraction",
-        should_retry_extraction,
+        "owner_analysis",
+        should_retry_owner_analysis,
         {
-            "extraction": "extraction",  # Retry same node
+            "owner_analysis": "owner_analysis",  # Retry same node
             "address_matching": "address_matching"  # Move to next
         }
     )
@@ -1378,30 +2251,42 @@ async def run_two_node_workflow():
         should_retry_address_matching,
         {
             "address_matching": "address_matching",  # Retry same node
-            "end": END
+            "extraction": "extraction"  # Move to extraction (not end)
+        }
+    )
+
+    workflow.add_conditional_edges(
+        "extraction",
+        should_retry_extraction,
+        {
+            "extraction": "extraction",  # Retry same node
+            "end": END  # Now this goes to end
         }
     )
 
     # Set entry point
-    workflow.set_entry_point("extraction")
+    workflow.set_entry_point("owner_analysis")
 
     # Compile the graph
     app = workflow.compile()
 
     # Run the workflow
     try:
-        logger.info("Starting two-node workflow execution with retry logic")
+        logger.info("Starting three-node  workflow execution with retry logic")
         final_state = await app.ainvoke(initial_state)
 
         # Log final status
-        if final_state['all_files_processed'] and final_state['all_addresses_matched']:
+        if final_state['owner_analysis_complete'] and final_state['all_addresses_matched'] and final_state[
+            'all_files_processed']:
             logger.info("✅ Workflow completed successfully - all tasks completed")
         else:
             logger.warning("⚠️ Workflow completed with incomplete tasks")
-            if not final_state['all_files_processed']:
-                logger.warning("- Not all files were processed")
+            if not final_state['owner_analysis_complete']:
+                logger.warning("- Owner analysis was not completed")
             if not final_state['all_addresses_matched']:
                 logger.warning("- Not all addresses were matched")
+            if not final_state['all_files_processed']:
+                logger.warning("- Not all files were processed")
 
     except Exception as e:
         logger.error(f"Workflow error: {e}")
@@ -1411,10 +2296,11 @@ async def run_two_node_workflow():
 async def main():
     """Main entry point"""
     try:
-        await run_two_node_workflow()
+        await run_three_node_workflow()
     except Exception as e:
         logger.error(f"Processing failed: {e}")
         sys.exit(1)
+
 
 def run_main():
     """Non-async main entry point for CLI"""
