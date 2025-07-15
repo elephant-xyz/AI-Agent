@@ -1169,13 +1169,15 @@ class ExtractionGeneratorEvaluatorPair:
             ✅ VALIDATION CHECKLIST: you must ensure the following criteria are met one by one everytime:
             1. Full data coverage: All information present in the input file must be extracted in county_data_group.json.
             2. Layouts for ALL (bedrooms, full and half bathrooms) must be extracted into distinct layout objects. E.g., 2 beds, 1.5 bathroom = 4 layout files (2 beds, 1 full bathroom, 1 half bathroom).
-            3. Tax history must include ALL years from the input. No years should be missing starting from 2025
-            4. Sales history must include ALL years from the input for this PARCEL ID ONLY. No years should be missing, DO NOT INCLUDE SALES OF SUBDIVISON.
-            5. All essential property details must be present (e.g., parcel ID, zoning, square footage, etc.).
-            6. Layouts, persons, and sales must be correctly numbered (e.g., layout_1, layout_2, person_1, etc.).
-            7. No TODO placeholders allowed in the extraction script. Request fixes immediately.
-            8. json files that have all data as null or empty should be removed from the data folder.
-            9. Address is correctly extracted with all components:
+            3. Layout Must represent exactly the number of space_type inside the property NO MORE, if there is 2 bedrooms, 1.5 bathroom, then you should have 4 layout files ONLY.
+            4. Tax history must include ALL years from the input. No years should be missing starting from 2025
+            5. Sales history must include ALL years from the input for this PARCEL ID ONLY. No years should be missing, DO NOT INCLUDE SALES OF SUBDIVISON.
+            6. MAKE SURE you are getting sales for this parcel ID ONLY, do not include sales of subdivision.
+            7. All essential property details must be present (e.g., parcel ID, zoning, square footage, etc.).
+            8. Layouts, persons, and sales must be correctly numbered (e.g., layout_1, layout_2, person_1, etc.).
+            9. No TODO placeholders allowed in the extraction script. Request fixes immediately.
+            10. json files that have all data as null or empty should be removed from the data folder.
+            11. Address is correctly extracted with all components:
                 - street_number
                 - street_name
                 - unit_identifier
