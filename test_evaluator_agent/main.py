@@ -41,15 +41,15 @@ INPUT_DIR = os.path.join(BASE_DIR, "input")
 #
 # # IPFS CIDs for schemas
 SCHEMA_CIDS = {
-    "person.json": "bafkreigbqmehadrofn3grnmlsltdfffgcgxzarfnae6jmb4cfkyrrxr4di",
-    "company.json": "bafkreie4rkzcye3yd75ftl6p7uj6vlkfy7i3l5smhq6ro6xnjppe5cxcpa",
-    "property.json": "bafkreiega6qiypxfdqdpaz4b6owi7fkp2toijbgdmpfxiirx7fcaxrrpiq",
-    "address.json": "bafkreihtho6x26y46x2dod5cgbs4zwzz5btg3hxajraoxx5itf7ipt5svy",
-    "tax.json": "bafkreiaujocuc24xb2ckvf2eqzyzq7tt43toh3ew7id5scqywusb5l7wcu",
-    "lot.json": "bafkreib7l6jsar7sc6lixfkybaueytfgnxig3qjbn5ezp3efxcu47yppbq",
-    "sales.json": "bafkreialispvbk6p3sxprp5ydmqcqnctc74kk4u4kffkkpnzicicmcgtna",
-    "layout.json": "bafkreigypa6mroe77rr63qumofeflllootajf7pniytz5273aw574mhwjm",
-    "flood_storm_information.json": "bafkreihu5ayhmiyhjtibveyca7gund5d5p5ojtcqhe6wxa2n64dlb4r6ze",
+    "person.json": "bafkreiglumouewubfiwflhxgainthalfjpafv3pkce2apao26igtou4u5m",
+    "company.json": "bafkreid5ohgd6cwgazimlnb3k4lafch7exv3rkyacwzswpds6mapdyx3qe",
+    "property.json": "bafkreig7xi5bdnzi6j2ckljwzw5nfgn7mehxtia6okyckfxhrtqlmaifbq",
+    "address.json": "bafkreie24md3coljlgdyfdrydb6ajul3zxkvmd7gvvp65bcp3pcclb2tne",
+    "tax.json": "bafkreiaqd72dpmmtmfazbl64ccbwctmtyl4xdsijogm4p7wcnq6pnkklb4",
+    "lot.json": "bafkreigclcied2zfs4exxtuyjeu2t3oxakzwpt2lehtidd5sctlpdmqebq",
+    "sales.json": "bafkreidcudd5plas3el2iks6x224lzf3f2pi662zxaw3rx3kfdyoeaf4lq",
+    "layout.json": "bafkreigdotg455zgmtn7rmxcdjoaiiihetzffydkqjeac7d373wp2yyqla",
+    "flood_storm_information.json": "bafkreib5sckeesr35igexfsql3cnw7umlfmb4pl64mn22yfkpd56l2njiq",
 }
 
 
@@ -1463,8 +1463,15 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
             # Create mapping from parcel_id (original folder name) to http_request and source_identifier
             for _, row in seed_df.iterrows():
                 parcel_id = str(row['parcel_id'])
+                method = row.get('method')
+                url = row.get('url')
+                multiValueQueryString = row.get('multiValueQueryString')
                 seed_data[parcel_id] = {
-                    'http_request': row['http_request'],
+                    "source_http_request": {
+                        "method": method,
+                        "url": url,
+                        "multiValueQueryString": json.loads(multiValueQueryString) if multiValueQueryString else None,
+                    },
                     'source_identifier': row['source_identifier']
                 }
 
@@ -1475,7 +1482,7 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
 
         # Copy data to submit directory with proper naming and build relationships
         copied_count = 0
-        county_data_group_cid = "bafkreia23qtrtvkbfa2emegfjpgf5esircbn5mqb7y5rmmpnqfed3v2bm4"
+        county_data_group_cid = "bafkreihmkn4iptitc4wtapo4upiwfiznxrjejpulousriynkc3g3kmjcge"
 
         # NEW: Collect all relationship building errors
         all_relationship_errors = []
@@ -1508,8 +1515,7 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
                                 # Check if this JSON has source_http_request field
                                 if 'source_http_request' in json_data:
                                     # Update the JSON data with seed information
-                                    json_data['source_http_request'] = unescape_http_request(
-                                        seed_data[folder_name]['http_request'])
+                                    json_data['source_http_request'] = seed_data[folder_name]['source_http_request']
                                     json_data['request_identifier'] = str(seed_data[folder_name]['source_identifier'])
 
                                     # Write back to file
