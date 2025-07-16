@@ -1482,7 +1482,7 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
 
         # Copy data to submit directory with proper naming and build relationships
         copied_count = 0
-        county_data_group_cid = "bafkreihmkn4iptitc4wtapo4upiwfiznxrjejpulousriynkc3g3kmjcge"
+        county_data_group_cid = "baguqeerazcgxpl25rebif3ayaiksmpkceyjtkg42diyo6cwj6dgghp7pdida"
 
         # NEW: Collect all relationship building errors
         all_relationship_errors = []
