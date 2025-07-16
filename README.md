@@ -28,7 +28,7 @@ The agent requires specific directory structure and environment variables:
 ```
 ./possible_addresses/ directory should contain all possible addresses for each property has its own json file with all possible addresses from OpenAddress.
 ./seed.csv  # Seed CSV file for initial data
-./input/  # Input files to process
+./input/  # properties input file to be processed, either json or html format
 ./upload-results.csv # csv generated from Minting Seed data group, it contains all the Property CIDs.
 
 ```

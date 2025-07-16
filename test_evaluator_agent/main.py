@@ -286,7 +286,7 @@ Execute your scripts and verify the files contain real owner data before finishi
         - Properly detect company vs person names
         - Convert names to proper case (not ALL CAPS)
         - Handle special characters and hyphens correctly
-        - Generate clean, structured output
+        - Generate clean, structured output, not include & in person name
         - YOU MUST CREATE BOTH FILES: owners_extracted.json AND owners_schema.json
         - DO NOT FINISH until both files exist and contain actual owner data (not all nulls)
 
