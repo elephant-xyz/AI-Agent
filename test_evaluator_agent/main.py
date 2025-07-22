@@ -5,6 +5,8 @@ import json
 import logging
 import requests
 import time
+import git
+import tempfile
 import hashlib
 import shutil
 import subprocess
@@ -41,15 +43,17 @@ INPUT_DIR = os.path.join(BASE_DIR, "input")
 #
 # # IPFS CIDs for schemas
 SCHEMA_CIDS = {
-    "person.json": "bafkreiglumouewubfiwflhxgainthalfjpafv3pkce2apao26igtou4u5m",
-    "company.json": "bafkreid5ohgd6cwgazimlnb3k4lafch7exv3rkyacwzswpds6mapdyx3qe",
-    "property.json": "bafkreig7xi5bdnzi6j2ckljwzw5nfgn7mehxtia6okyckfxhrtqlmaifbq",
-    "address.json": "bafkreie24md3coljlgdyfdrydb6ajul3zxkvmd7gvvp65bcp3pcclb2tne",
-    "tax.json": "bafkreiaqd72dpmmtmfazbl64ccbwctmtyl4xdsijogm4p7wcnq6pnkklb4",
-    "lot.json": "bafkreigclcied2zfs4exxtuyjeu2t3oxakzwpt2lehtidd5sctlpdmqebq",
-    "sales.json": "bafkreidcudd5plas3el2iks6x224lzf3f2pi662zxaw3rx3kfdyoeaf4lq",
-    "layout.json": "bafkreigdotg455zgmtn7rmxcdjoaiiihetzffydkqjeac7d373wp2yyqla",
-    "flood_storm_information.json": "bafkreib5sckeesr35igexfsql3cnw7umlfmb4pl64mn22yfkpd56l2njiq",
+    "person.json": "bafkreiajbdqn32mgb3s52xkrvzzwer7oit3gma6bpetzfcmkldxgy5di7m",
+    "company.json": "bafkreibnw5zonrappj3prexq7p376njvvawqqzfde222qytsl2jsbst3da",
+    "property.json": "bafkreih6x76aedhs7lqjk5uq4zskmfs33agku62b4flpq5s5pa6aek2gga",
+    "address.json": "bafkreid5icxhvf6qmmwzok6pnxlgxmqahddbngykwtdaqbcqznjfqh2tve",
+    "tax.json": "bafkreibnk4xl6jwgxfeumim6cqpi66ngabzxlxljyhwhuziksbz7buau54",
+    "lot.json": "bafkreichj2jpejog35oqwxlbxv2i7mi4vfec5njoreppya3grnukf7rdy4",
+    "sales.json": "bafkreicdvzuuymrsyn6wpbo5ossj3q3xcdwiyiniwg7bkmpvbfxtikjv5a",
+    "layout.json": "bafkreiegxxnvwnhmrrighkvqikulfi54a7jv7gndnar6zju722wfxzk6xm",
+    "flood_storm_information.json": "bafkreidh7s2pk26qtob2iiznkvdb6hqr75weybo5p67erq23e53rsfbnuy",
+    "structure.json": "bafkreictnk74jkby6q64d3vm6h57s6vr5x65p2wzubpwvwsjil2254okhi",
+    "utility.json": "bafkreib3wrmiwqyi34xdengoyud4aplz5rbsjs6vag4eic4n7ohturx6xq"
 }
 
 
@@ -62,6 +66,7 @@ class WorkflowState(TypedDict):
     extraction_complete: bool
     address_matching_complete: bool
     owner_analysis_complete: bool
+    structure_extraction_complete: bool
     validation_errors: List[str]
     processed_properties: List[str]
     current_node: str
@@ -136,10 +141,9 @@ class OwnerAnalysisAgent:
 CRITICAL ISSUE: Previously, the extraction resulted in all null owner names. This means the extraction script didn't understand the input file structure.
 
 YOU MUST:
-1. FIRST examine the input files to understand their exact structure
-2. Look for where ownerName1 and ownerName2 are located (could be nested in JSON or embedded in HTML)
-3. Create extraction script that correctly finds and extracts the owner data
-4. VERIFY that extracted data contains actual names, not nulls
+1. Look in inputs files for where ownerName1 and ownerName2 are located (could be nested in JSON or embedded in HTML)
+2. Create extraction script that correctly finds and extracts the owner data
+3. VERIFY that extracted data contains actual names, not nulls
 
 REQUIRED OUTPUT FILES:
 1. owners/owners_extracted.json (raw extracted owner data - must contain actual names, not nulls)
@@ -192,43 +196,58 @@ Execute your scripts and verify the files contain real owner data before finishi
         📂 INPUT STRUCTURE:
         - Input files are located in ./input/ directory ({self.state['input_files_count']} files)
         - Files can be .html or .json format
-        - understand the structure of owner names and how they are stored
-        - Some properties have only ownerName1, others have both ownerName1 and ownerName2
-        - YOU MUST EXAMINE the actual input files to understand their structure first
-        - Owner data might be nested within JSON objects or embedded in HTML
 
-        🔧 YOUR TASKS:
+        🔄 MANDATORY SCRIPT-FIRST WORKFLOW:
 
-        PHASE 0: UNDERSTAND INPUT STRUCTURE (CRITICAL)
-        1. First, examine 3-5 sample input files to understand:
-           - Are they JSON or HTML format?
-           - What is the exact structure?
-           - Where exactly are ownerName1 and ownerName2 located?
-           - Are they at root level or nested inside objects?
-           - Print sample data to understand the format
+        STEP 1: CHECK FOR EXISTING SCRIPT (ALWAYS DO THIS FIRST!)
+        1. **IMMEDIATELY** check if scripts/owner_processor.py already exists using read_file tool
+        2. If the file EXISTS:
+           a. **RUN THE EXISTING SCRIPT** using execute_code_file tool
+           b. **CHECK OUTPUT** - read owners/owners_schema.json if it was created
+           c. **VALIDATION CHECKLIST** 
 
-        PHASE 1: EXTRACTION
-        1. CREATE a script: scripts/owner_extractor.py
-        2. The script must:
-           - Read ALL files from ./input/ directory
-           - Handle both JSON and HTML input formats correctly
-           - Extract ownerName1 and ownerName2 from each file (find the correct path/location)
-           - Handle nested JSON structures if needed
-           - Parse HTML content if input files are HTML
-           - Save extracted data to: owners/owners_extracted.json
-           - ENSURE owner names are NOT null - if extraction fails, debug and fix
-        3. Execute the extraction script and verify it extracts actual owner names
+        3. If output is CORRECT and COMPLETE → **STOP HERE, YOU'RE DONE!**
+        4. If output is MISSING or INCORRECT → go to STEP 3 to UPDATE the script
+        5. If the file DOES NOT EXIST → go to STEP 3 to CREATE the script
 
-        PHASE 2: ANALYSIS & CATEGORIZATION
-        1. CREATE a script: scripts/owner_analyzer.py  
-        2. The script must:
-           - Read owners/owners_extracted.json
-           - Analyze each owner name to determine if it's a Person or Company
+        STEP 2: ANALYSIS & CATEGORIZATION PHASE:
+           - PICK 3 samples of the input files to do validation check on it 
+           - Compare the owners/owners_schema.json file with the input files
+           - Analyze each extracted owner name to determine if it's a Person or Company
+           - ensure it contains actual owner names (not nulls/empty)
+           - you MUST Analyze EVERY AND EACH extracted owner name in owners/owners_schema.json to determine if it's EXTRACTED CORRECTLY a Person or Company
+           - companies identified properly.
+           - verify person names parsed into: first_name, last_name, middle_name correctly
+           - Generate clean, structured output, not include & in person name
+           - If owners is not extracted correctly fix the script and rerun
            - Parse person names into: first_name, last_name, middle_name
-           - Identify company names (look for: Inc, LLC, Ltd, Foundation, Alliance, Solutions, Services, etc.)
+           - Identify company names (Inc, LLC, Ltd, Foundation, Alliance, Solutions, etc.)
            - Generate structured data following person/company schemas
+           - If data is not correct move to STEP 3
 
-        🏢 COMPANY DETECTION RULES:
+        STEP 3: CREATE/UPDATE UNIFIED SCRIPT (Only if Step 1 failed or file missing)
+
+        Actions:
+        1. EXAMINE input file structure first (3-5 samples)
+        2. CREATE or UPDATE scripts/owner_processor.py as a SINGLE UNIFIED SCRIPT that:
+
+           A. EXTRACTION PHASE:
+           - Handle both JSON and HTML input formats correctly
+           - Extract ownerName1 and ownerName2 from each file
+           - Make sure to extract all previous owners as well, if available
+           - Store extracted data in memory (no need for separate extracted file)
+           - ENSURE owner names are NOT null - debug and fix if extraction fails
+
+           B. ANALYSIS & CATEGORIZATION PHASE (same script):
+           - Analyze each extracted owner name to determine if it's a Person or Company
+           - Parse person names into: first_name, last_name, middle_name
+           - Identify company names (Inc, LLC, Ltd, Foundation, Alliance, Solutions, etc.)
+           - Generate structured data following person/company schemas
+           - Save FINAL output to: owners/owners_schema.json
+
+        3. **TEST THE UPDATED SCRIPT** - run it and validate output
+
+        🏢 COMPANY DETECTION RULES (built into unified script):
         Detect companies by these indicators:
         - Legal suffixes: Inc, LLC, Ltd, Corp, Co
         - Nonprofits: Foundation, Alliance, Rescue, Mission
@@ -236,61 +255,53 @@ Execute your scripts and verify the files contain real owner data before finishi
         - Military/Emergency: Veterans, First Responders, Heroes
         - Organizations: Initiative, Association, Group
 
-
         📋 OUTPUT STRUCTURE:
         Generate: owners/owners_schema.json with this structure:
         ```json
         {{
           "property_[id]": {{
-            "owners": [
-              {{
-                "type": "person",
-                "first_name": "Jason",
-                "last_name": "Tomaszewski",
-                "middle_name": null
-              }},
-              {{
-                "type": "person", 
-                "first_name": "Miryam",
-                "last_name": "Greene-Tomaszewski",
-                "middle_name": null
-              }}
-            ]
-          }},
-          "property_[id2]": {{
-            "owners": [
-              {{
-                "type": "person",
-                "first_name": "Thomas",
-                "last_name": "Walker", 
-                "middle_name": "W"
-              }}
-            ]
-          }},
-          "property_[id3]": {{
-            "owners": [
-              {{
-                "type": "company",
-                "name": "First Responders Foundation"
-              }}
-            ]
-          }}
+            "owners_by_date": {{
+                "04/29/2024":[
+                    {{
+                        "type": "person",
+                        "first_name": "Jason",
+                        "last_name": "Tomaszewski",
+                        "middle_name": null
+                      }},
+                      {{
+                        "type": "person", 
+                        "first_name": "Miryam",
+                        "last_name": "Greene-Tomaszewski",
+                        "middle_name": null
+                      }}
+                    ],
+                "04/07/2022": [
+                     {{
+                        "type": "company",
+                        "name": "First Responders Foundation"
+                      }}
+                    ],
+                }}
+            }},
         }}
         ```
 
         ⚠️ CRITICAL RULES:
-        - FIRST examine input file structure before writing extraction code
+        - **NEVER CREATE A NEW SCRIPT WITHOUT FIRST CHECKING FOR EXISTING ONE**
+        - **ALWAYS RUN EXISTING SCRIPT FIRST AND CHECK OUTPUT**
+        - Use ONE UNIFIED SCRIPT (owner_processor.py) that does both extraction and analysis
+        - Only CREATE script if no existing script found
+        - Only UPDATE script if existing script produces wrong output
         - Process ALL {self.state['input_files_count']} input files
-        - Handle missing ownerName2 gracefully (can be empty/null, but ownerName1 should exist)
-        - If all owner names are null, the extraction script has a bug - FIX IT
-        - Properly detect company vs person names
-        - Convert names to proper case (not ALL CAPS)
-        - Handle special characters and hyphens correctly
-        - Generate clean, structured output, not include & in person name
-        - YOU MUST CREATE BOTH FILES: owners_extracted.json AND owners_schema.json
-        - DO NOT FINISH until both files exist and contain actual owner data (not all nulls)
+        - Final output: ONLY owners/owners_schema.json (no intermediate files needed)
 
-        🚀 START: Begin by examining input file structure, then create extraction script, then analysis script, then execute both and VERIFY files contain real data.
+        🚨 WORKFLOW ENFORCEMENT:
+        - FIRST ACTION: Use read_file tool on scripts/owner_processor.py
+        - IF FILE EXISTS: Use execute_code_file tool to run it
+        - IF FILE DOESN'T EXIST: Then and only then create it
+        - IF OUTPUT IS WRONG: Then and only then update the existing script
+
+        🚀 START: **IMMEDIATELY** check for existing script with read_file tool, run it if exists, validate output, then create/update only if needed.
         """
 
         return create_react_agent(
@@ -354,6 +365,7 @@ Execute your scripts and verify the files contain real owner data before finishi
                         tool_output = event['data'].get('output', '')
                         success_indicator = "✅" if "error" not in str(tool_output).lower() else "❌"
                         logger.info(f"       {success_indicator} {agent_name} tool {tool_name} completed")
+                        logger.info(f"       📤 Result: {str(tool_output)[:100]}...")
 
                     elif kind == "on_chain_end":
                         output = event['data'].get('output', '')
@@ -398,7 +410,6 @@ class AddressMatchingGeneratorEvaluatorPair:
         """Restart the generation process with a fresh thread"""
         logger.info("🔄 RESTARTING ADDRESS MATCHING PROCESS - Creating new thread and agents")
 
-        cleanup_directories()
         self.state['last_agent_activity'] = 0
         self.state['generation_restart_count'] += 1
 
@@ -430,13 +441,18 @@ class AddressMatchingGeneratorEvaluatorPair:
 
         # GENERATOR STARTS: Create initial script
         logger.info("🤖 Address Generator starts the conversation...")
-
-        await self._agent_speak(
-            agent=generator_agent,
-            agent_name="ADDRESS_GENERATOR",
-            turn=1,
-            user_instruction="Start by creating the address matching script and processing all input files"
-        )
+        try:
+            await self._agent_speak(
+                agent=generator_agent,
+                agent_name="ADDRESS_GENERATOR",
+                turn=1,
+                user_instruction="Start by creating the address matching script and processing all input files"
+            )
+        except Exception as e:
+            if "timed out" in str(e):
+                logger.warning("⏰ Agent timeout during initial ADDRESS_GENERATOR - restarting")
+                return await self._restart_generation_process()
+            raise
 
         # Continue conversation until evaluator accepts or max turns
         while conversation_turn < self.max_conversation_turns:
@@ -460,7 +476,10 @@ class AddressMatchingGeneratorEvaluatorPair:
                     agent=evaluator_agent,
                     agent_name="ADDRESS_EVALUATOR",
                     turn=conversation_turn,
-                    user_instruction="Review and evaluate the Address Generator's matching work and validate address completeness by comparing with sample input files. Check if addresses_mapping.json is properly created with correct address components.",
+                    user_instruction="""
+                     Review and evaluate the Address Generator's matching work and validate address completeness by comparing with sample input files.
+                     Check if addresses_mapping.json is properly created with correct address components.
+                     """,
                 )
                 # Add debug logging here:
                 logger.info(f"🔍 DEBUG: Full evaluator response:")
@@ -496,6 +515,7 @@ class AddressMatchingGeneratorEvaluatorPair:
 
                 YOU MUST:
                     1. Use the filesystem tools to read/modify the address extraction script
+                    2.look at the ./schema/address.json schema and ./input directory to understand the address structure before fixing script
                     2. You MUST understand all the root causes of the errors to update address_extraction.py script to fix the address matching errors
                     3. Fix ALL the specific errors mentioned above
                     4. Test your changes by running the script and make sure you eliminated these errors
@@ -519,95 +539,203 @@ class AddressMatchingGeneratorEvaluatorPair:
 
     async def _create_address_generator_agent(self):
         """Create Address Generator agent"""
+        # UPDATED ADDRESS MATCHING GENERATOR PROMPT
         generator_prompt = f"""
-            You are an address matching specialist handling the final phase of property data processing, you job is to create address_extraction.py script after understading your full task:
+        You are an address matching specialist handling address data processing and matching.
 
-            🔄 CURRENT STATUS:
-                🔁 Attempt: {self.state['retry_count'] + 1} of {self.state['max_retries']}
+        🔄 CURRENT STATUS:
+            🔁 Attempt: {self.state['retry_count'] + 1} of {self.state['max_retries']}
 
-            🎯 YOUR MISSION: Process ALL properties in ./input/ by writing a script that matches addresses,  scripts/address_extraction.py.
+        🎯 YOUR MISSION: Process ALL properties in ./input/ by matching addresses using scripts/address_extraction.py.
 
-            PHASE 1: ANALYZE THE DATA STRUCTURE
-                1. Examine 3-5 samples from possible_addresses/ to understand:
-                   - JSON format and field structure
-                   - How many address candidates each property has
-                   - Address format variations
+        🔄 MANDATORY SCRIPT-FIRST WORKFLOW:
 
-                2. Check corresponding input files for these 3-5 samples to understand:
-                   - Where addresses appear in the input
-                   - How to extract: street number, street name, unit, city, zip
+        STEP 1: CHECK FOR EXISTING SCRIPT AND RUN IT
+        1. **IMMEDIATELY** check if scripts/address_extraction.py already exists using read_file tool
+        2. If the file EXISTS:
+           - **RUN THE EXISTING SCRIPT** using execute_code_file tool
+           - **CHECK OUTPUT** - read owners/addresses_mapping.json if it was created
+           - **WAIT FOR EVALUATOR FEEDBACK** - the evaluator will validate your output
+        3. If the file DOES NOT EXIST → go to STEP 2 to CREATE the script
 
-                3. Plan your matching strategy before coding
+        STEP 2: CREATE/UPDATE SCRIPT (Only when needed)
+        **EXECUTE THIS ONLY IF:**
+        - No scripts/address_extraction.py exists, OR
+        - Evaluator found validation errors in your output
 
-            PHASE 2: BUILD THE MATCHING SCRIPT
-                Create: scripts/address_extraction.py
+        Actions for creating/updating script:
+        1. **ANALYZE DATA STRUCTURE** (only if creating/fixing script):
+           - Examine 3-5 samples from possible_addresses/ to understand JSON format
+           - Check corresponding input files to understand address location
+           - Plan matching strategy before coding
 
-                The script must:
-                   - process all property in ./input/
-                   - Extract property_parcel_id from input file name
-                   - Load possible_addresses/[property_parcel_id].json (candidate addresses)
-                   - Parse address from input/[property_parcel_id] files
-                   - Extract all address attributes inside ./schemas/address.json following the address schema with a validation function to validate the address against the schema
-                   - with a validation function to validate the address against the schema , if not valid, fix the script and rerun
-                   - correctly extract plus_four_postal_code
-                   - get the county name from seed.csv file
+        2. **CREATE or UPDATE** scripts/address_extraction.py:
+           A. EXTRACTION PHASE:
+           - Process all properties in ./input/
+           - Extract property_parcel_id from input file name
+           - Load possible_addresses/[property_parcel_id].json (candidate addresses)
+           - Parse address from input files
+           - Extract all address attributes following ./schemas/address.json
+           - Get county name from seed.csv file
 
-                B. Find the best address match:
-                   - Compare input files address with candidates in possible_addresses/
-                   - Use exact matching first, then fuzzy matching if needed
-                   - Focus on: street number + street name + unit (if applicable)
+           B. MATCHING PHASE:
+           - Compare input file address with candidates in possible_addresses/
+           - Use exact matching first, then fuzzy matching if needed
+           - Focus on: street number + street name + unit (if applicable)
 
+           C. OUTPUT PHASE:
+           - Save matched address data to: owners/addresses_mapping.json
+           - Follow address schema: {self.state['schemas']['address.json']}
 
-                C. When match found:
-                   - Update addresses_mapping.json with matched address data using schema: ./schemas/address.json 
+        3. **TEST THE SCRIPT** - run it and generate output
 
-            📋 OUTPUT STRUCTURE:
-            Generate: owners/addresses_mapping.json with this structure: following the address schema: {self.state['schemas']['address.json']}
-            ```json
-            {{
-              "property_[id]": {{
-                "address": 
-                  {{
-                      "city_name": "MARGATE",
-                      "postal_code": "33063",
-                      "state_code": "FL",
-                      "street_name": "18",
-                      "street_number": "6955",
-                      "street_post_directional_text": null,
-                      "street_pre_directional_text": "NW",
-                      "street_suffix_type": "ST",
-                      "unit_identifier": null,
-                      "latitude": 1234,
-                      "longitude": 1234,
-                      ...
-                  }}
-
-              }},
-
-              "property_[id2]": {{
-                "address": 
-                  {{
-                      "city_name": "MARGATE",
-                      "postal_code": "33063",
-                      "state_code": "FL",
-                      "street_name": "24 COURT",
-                      "street_number": "6731",
-                      "street_post_directional_text": null,
-                      "street_pre_directional_text": "NW",
-                      "street_suffix_type": "ST",
-                      "unit_identifier": null,
-                      "latitude": 1234,
-                      "longitude": 1234,
-                  }}
-              }}
+        📋 OUTPUT STRUCTURE:
+        Generate: owners/addresses_mapping.json following address schema:
+        ```json
+        {{
+          "property_[id]": {{
+            "address": {{
+                "city_name": "MARGATE",
+                "postal_code": "33063",
+                "state_code": "FL",
+                "street_name": "18",
+                "street_number": "6955",
+                "street_post_directional_text": null,
+                "street_pre_directional_text": "NW",
+                "street_suffix_type": "ST",
+                "unit_identifier": null,
+                "latitude": 1234,
+                "longitude": 1234,
+                "plus_four_postal_code": "1234"
             }}
-            ```
+          }}
+        }}
+        ```
 
-            SUCCESS CRITERIA:
-                ✅ All addresses_mapping.json files have proper address data with N number of properties in input/ dir
+        ⚠️ CRITICAL RULES:
+        - **NEVER CREATE SCRIPT WITHOUT FIRST CHECKING FOR EXISTING ONE**
+        - **ALWAYS RUN EXISTING SCRIPT FIRST**
+        - Only CREATE script if no existing script found
+        - Only UPDATE script if evaluator finds validation errors
+        - Process ALL properties in ./input/ directory
+        - Follow address schema exactly
 
-            START with data analysis, then build the script, then execute until complete.
-            """
+        🚨 WORKFLOW ENFORCEMENT:
+        - **FIRST ACTION**: Use read_file tool on scripts/address_extraction.py
+        - **IF EXISTS**: Use execute_code_file tool to run it
+        - **IF DOESN'T EXIST**: Then create it
+        - **IF EVALUATOR REJECTS**: Then update the existing script with specific fixes
+
+        🚀 START: **IMMEDIATELY** check for existing script, run it if exists, then wait for evaluator feedback.
+        """
+
+        # UPDATED ADDRESS EVALUATOR PROMPT
+        evaluator_prompt = f"""
+        You are the ADDRESS EVALUATOR in a multi-agent address matching pipeline.
+
+        🎯 YOUR TASK:
+        Validate address matching completeness and accuracy by checking the generator's output.
+
+        🔄 MANDATORY VALIDATION WORKFLOW:
+
+        STEP 1: CHECK FOR EXISTING VALIDATION SCRIPT AND RUN IT
+        1. **FIRST** check if scripts/address_validation.py already exists using read_file tool
+        2. If the file EXISTS:
+           - **RUN THE EXISTING VALIDATION SCRIPT** using execute_code_file tool
+           - **ANALYZE THE VALIDATION RESULTS** 
+           - **PROCEED TO STEP 2 FOR ADDITIONAL MANUAL VALIDATION**
+        3. If the file DOES NOT EXIST → create it, run it, then proceed to STEP 2
+
+        STEP 2: MANDATORY MANUAL VALIDATION (NEVER SKIP THIS!)
+        **YOU MUST ALWAYS DO THIS VALIDATION:**
+
+        A. **CHECK OUTPUT FILE EXISTS**:
+           - Verify owners/addresses_mapping.json exists and has content
+           - Count how many properties are included
+
+        B. **PICK 3 SAMPLE PROPERTIES** for detailed validation:
+           - Read 3 different input files from ./input/ directory
+           - Extract what the addresses should be from these files manually
+           - Read the corresponding entries in owners/addresses_mapping.json
+
+        C. **VALIDATE ADDRESS COMPONENTS** (CRITICAL - CHECK EVERY FIELD):
+           For each sample property, verify ALL address components exist and are correct:
+           - **street_number** (not null/empty where it should exist)
+           - **street_name** (not null/empty)
+           - **unit_identifier** (null if no unit, correct value if unit exists)
+           - **city_name** (not null/empty)
+           - **postal_code** (not null/empty, correct format)
+           - **state_code** (not null/empty)
+           - **street_pre_directional_text** (N, S, E, W if applicable)
+           - **street_post_directional_text** (directional after street name if applicable)
+           - **street_suffix_type** (ST, AVE, BLVD, etc. if applicable)
+           - **plus_four_postal_code** (4-digit extension if available)
+           - **latitude/longitude** (if available in source)
+
+        D. **COMPARE WITH SOURCE DATA**:
+           - Ensure addresses in output match the actual addresses from input files
+           - Check that address matching logic selected the best candidate
+           - Verify no placeholder values (like "TODO", "TBD", etc.)
+
+        E. **SCHEMA COMPLIANCE CHECK**:
+           - Verify all addresses follow the exact schema format
+           - Check data types are correct
+           - Ensure required fields are present
+
+        STEP 3: VALIDATION DECISION
+        - **If ALL validation checks PASS** → Return "STATUS: ACCEPTED"
+        - **If ANY validation check FAILS** → Return "STATUS: REJECTED" with action plan
+
+        **COMMON ISSUES TO CHECK FOR:**
+        - Missing addresses_mapping.json file
+        - Missing properties (not all input files processed)
+        - Null/empty required address components
+        - Incorrect address components (wrong street name, number, etc.)
+        - Schema violations (wrong data types, missing fields)
+        - Placeholder values instead of real data
+
+        STEP 4: CREATE/UPDATE VALIDATION SCRIPT (Only if needed)
+        If no validation script exists:
+        - CREATE scripts/address_validation.py that:
+          - Reads owners/addresses_mapping.json
+          - Validates against address schema: {self.state['schemas']['address.json']}
+          - Checks for required fields, data types, format compliance
+          - Reports detailed validation results
+
+        📝 RESPONSE FORMAT:
+        Start with:
+        **STATUS: ACCEPTED** or **STATUS: REJECTED**
+
+        If REJECTED, provide specific action plan:
+        - List exactly what is wrong
+        - Provide step-by-step instructions for the generator to fix issues
+        - Be specific about which address components are missing/incorrect
+
+        ✅ VALIDATION CHECKLIST:
+        1. addresses_mapping.json exists in owners/ directory
+        2. Contains address data for ALL properties in input/ directory  
+        3. All address components properly extracted (not null where they should exist)
+        4. Addresses match source data in input files
+        5. Schema compliance - correct format and data types
+        6. No placeholder/TODO values
+        7. Address matching selected best candidates from possible_addresses/
+
+        ⚠️ CRITICAL RULES:
+        - **STEP 2 MANUAL VALIDATION IS MANDATORY** - never skip it
+        - **CHECK EVERY ADDRESS COMPONENT** for 3 sample properties
+        - **COMPARE WITH SOURCE INPUT FILES** to verify accuracy
+        - Only accept if ALL validation criteria are met
+        - Be strict - any missing or incorrect data = REJECTED
+
+        🚨 WORKFLOW ENFORCEMENT:
+        1. **FIRST**: Check for existing validation script
+        2. **RUN SCRIPT**: If exists, execute it
+        3. **MANDATORY**: Do manual validation (compare 3 samples with source)
+        4. **DECISION**: Accept only if everything is perfect
+        5. **IF REJECTED**: Provide specific action plan for generator
+
+        🚀 START: Check for existing validation script, run it, then ALWAYS do manual validation to catch any errors.
+        """
 
         return create_react_agent(
             model=self.model,
@@ -640,7 +768,8 @@ class AddressMatchingGeneratorEvaluatorPair:
         STEP 3: MANUAL VALIDATION
         For a **sample of 3–5 properties**:
         1. **Check if owners/addresses_mapping.json exists** and has content
-        2. you MUST **Verify address components** are properly extracted, everysingle attribute must be verified that it exists:
+        2. do a checksum to make sure all proeprties address are extracted
+        3. you MUST **Verify address components** are properly extracted, everysingle attribute must be verified that it exists:
           Checklist of address components to verify:
            - street_number
            - street_name 
@@ -652,8 +781,8 @@ class AddressMatchingGeneratorEvaluatorPair:
            - street_post_directional_text
            - street_suffix_type
            - latitude/longitude if available
-        3. **Compare with input files** to ensure addresses match the source data
-        4. **Verify matching logic** worked correctly by checking a few examples
+        4. **Compare with input files** to ensure addresses match the source data
+        5. **Verify matching logic** worked correctly by checking a few examples
 
         ✅ VALIDATION CHECKLIST:
         1. addresses_mapping.json file exists in owners/ directory
@@ -678,6 +807,8 @@ class AddressMatchingGeneratorEvaluatorPair:
         - Address component issues: <Only if found>
         - Schema compliance issues: <Only if found>
         - Matching logic problems: <Only if found>
+
+        if REJECTED, REPLY ONLY WITH AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
 
         🗣️ CONVERSATION RULES:
         - You must FIRST create and run the validation script
@@ -814,9 +945,540 @@ class AddressMatchingGeneratorEvaluatorPair:
         except asyncio.TimeoutError:
             logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
             logger.error(f"     🔄 This will trigger a restart of the address matching process")
-            cleanup_directories()
             raise Exception(
                 f"{agent_name} timed out after {timeout_seconds} seconds of inactivity - restarting address matching")
+        except Exception as e:
+            logger.error(f"     ❌ {agent_name} error: {str(e)}")
+            return f"{agent_name} error on turn {turn}: {str(e)}"
+
+
+class StructureGeneratorEvaluatorPair:
+    """Generator and Evaluator for structure extraction node with validation"""
+
+    def __init__(self, state: WorkflowState, model, tools, schemas: Dict[str, Any]):
+        self.state = state
+        self.model = model
+        self.tools = tools
+        self.schemas = schemas
+        self.max_conversation_turns = 15
+        self.shared_checkpointer = InMemorySaver()
+        self.shared_thread_id = "structure-conversation-1"
+        self.consecutive_script_failures = 0
+        self.max_script_failures = 3
+
+    async def _restart_generation_process(self) -> WorkflowState:
+        """Restart the generation process with a fresh thread"""
+        logger.info("🔄 RESTARTING STRUCTURE EXTRACTION PROCESS - Creating new thread and agents")
+
+        self.state['last_agent_activity'] = 0
+        self.state['generation_restart_count'] += 1
+
+        # Create new thread ID for fresh start
+        self.shared_thread_id = f"structure-conversation-restart-{self.state['generation_restart_count']}"
+        self.shared_checkpointer = InMemorySaver()
+
+        # Reset conversation state
+        self.max_conversation_turns = 15
+
+        logger.info(f"🆕 Starting fresh structure extraction attempt #{self.state['generation_restart_count']}")
+        logger.info(f"🆕 New thread ID: {self.shared_thread_id}")
+
+        return await self.run_feedback_loop()
+
+    async def run_feedback_loop(self) -> WorkflowState:
+        """Run Structure Generator + Evaluator CONVERSATION"""
+
+        logger.info("🔄 Starting Structure Generator + Evaluator CONVERSATION")
+        logger.info(f"💬 Using shared thread: {self.shared_thread_id}")
+        logger.info(f"🎭 Two agents: Generator, Evaluator")
+
+        # Create agents
+        generator_agent = await self._create_structure_generator_agent()
+        evaluator_agent = await self._create_structure_evaluator_agent()
+
+        conversation_turn = 0
+        evaluator_accepted = False
+
+        # GENERATOR STARTS: Create initial script
+        logger.info("🤖 Structure Generator starts the conversation...")
+        try:
+            await self._agent_speak(
+                agent=generator_agent,
+                agent_name="STRUCTURE_GENERATOR",
+                turn=1,
+                user_instruction="Start by creating the structure extraction scripts and processing all input files"
+            )
+        except Exception as e:
+            if "timed out" in str(e):
+                logger.warning("⏰ Agent timeout during initial STRUCTURE_GENERATOR - restarting")
+                return await self._restart_generation_process()
+            raise
+
+        # Continue conversation until evaluator accepts or max turns
+        while conversation_turn < self.max_conversation_turns:
+            conversation_turn += 1
+
+            if hasattr(self, 'force_restart_now') and self.force_restart_now:
+                logger.warning("🔄 Structure extraction script failure restart triggered - restarting now")
+                self.force_restart_now = False
+                return await self._restart_generation_process()
+
+            if should_restart_due_to_timeout(self.state):
+                logger.warning("⏰ Agent timeout detected - restarting structure extraction process")
+                return await self._restart_generation_process()
+
+            logger.info(f"💬 Structure Extraction Turn {conversation_turn}/{self.max_conversation_turns}")
+
+            # EVALUATOR RESPONDS
+            logger.info("📊 Structure Evaluator reviews Generator's work...")
+            try:
+                evaluator_message = await self._agent_speak(
+                    agent=evaluator_agent,
+                    agent_name="STRUCTURE_EVALUATOR",
+                    turn=conversation_turn,
+                    user_instruction="""
+                     Review and evaluate the Structure Generator's extraction work and validate structure/utility/layout data completeness by comparing with sample input files.
+                     Check if all three output files are properly created with correct data extraction.
+                     """,
+                )
+                logger.info(f"🔍 DEBUG: Full evaluator response:")
+                logger.info(f"📝 {evaluator_message}")
+
+            except Exception as e:
+                if "timed out" in str(e):
+                    logger.warning("⏰ Agent timeout during STRUCTURE_EVALUATOR - restarting")
+                    return await self._restart_generation_process()
+                raise
+
+            evaluator_accepted = "STATUS: ACCEPTED" in evaluator_message
+            logger.info(f"📊 Structure Evaluator decision: {'ACCEPTED' if evaluator_accepted else 'NEEDS FIXES'}")
+
+            # Check if evaluator accepted
+            if evaluator_accepted:
+                logger.info("✅ Structure extraction conversation completed successfully - Evaluator approved!")
+                self.state['structure_extraction_complete'] = True
+                break
+
+            # GENERATOR RESPONDS: Sees feedback from evaluator and fixes issues
+            logger.info("🤖 Structure Generator responds to evaluator's feedback...")
+
+            await self._agent_speak(
+                agent=generator_agent,
+                agent_name="STRUCTURE_GENERATOR",
+                turn=conversation_turn + 1,
+                user_instruction=f"""IMMEDIATE ACTION REQUIRED,
+                SILENTLY Fix the structure extraction issues found by the evaluator immediately. Work silently, Don't reply to them, just use your tools to update the extraction scripts to Fix these specific issues:\n\n{evaluator_message}
+
+                DONOT REPLY FIX SILENTLY,
+
+                YOU MUST:
+                    1. Use the filesystem tools to read/modify the structure extraction scripts
+                    2. Look at the ./schemas/ directory to understand the required structure
+                    3. Look at the ./input directory to understand the data structure
+                    4. You MUST understand all the root causes of the errors to fix the extraction scripts
+                    5. Fix ALL the specific errors mentioned above
+                    6. Test your changes by running the scripts and make sure you eliminated these errors
+                    7. MAKE sure you have eliminated the errors before Quitting
+
+                DO NOT just acknowledge - TAKE ACTION NOW with tools to fix these issues.""")
+
+            logger.info(f"🔄 Structure extraction turn {conversation_turn} complete, continuing conversation...")
+
+        # Conversation ended
+        final_status = "ACCEPTED" if evaluator_accepted else "PARTIAL"
+
+        if final_status != "ACCEPTED":
+            logger.warning(
+                f"⚠️ Structure extraction conversation ended without full success after {self.max_conversation_turns} turns")
+            logger.warning(f"Evaluator: {'✅' if evaluator_accepted else '❌'}")
+
+        logger.info(f"💬 Structure extraction conversation completed with status: {final_status}")
+        return self.state
+
+    async def _create_structure_generator_agent(self):
+        """Create Structure Generator agent"""
+        generator_prompt = f"""
+        You are the STRUCTURE GENERATOR - an expert in home designs and structural design responsible for extracting structure, utility, and layout information.
+
+        🏗️ YOUR EXPERTISE: 
+        - Residential and commercial building structures
+        - Construction materials and methods
+        - Utility systems (electrical, plumbing, HVAC)
+        - Room layouts and space planning
+        - Building codes and standards
+
+        🎯 YOUR MISSION: 
+        Extract structure, utility, and layout information from property input files using three separate scripts.
+
+        📂 INPUT STRUCTURE:
+        - Input files are located in ./input/ directory ({self.state['input_files_count']} files)
+        - Files can be .html or .json format
+
+        🔄 MANDATORY SCRIPT-FIRST WORKFLOW:
+
+        STEP 1: CHECK FOR EXISTING SCRIPTS AND RUN THEM
+        1. **CHECK STRUCTURE SCRIPT**: 
+           - Check if scripts/structure_extractor.py exists using read_file tool
+           - If EXISTS: Run it using execute_code_file tool
+           - Check if owners/structure_data.json was created
+
+        2. **CHECK UTILITY SCRIPT**:
+           - Check if scripts/utility_extractor.py exists using read_file tool
+           - If EXISTS: Run it using execute_code_file tool
+           - Check if owners/utility_data.json was created
+
+        3. **CHECK LAYOUT SCRIPT**:
+           - Check if scripts/layout_extractor.py exists using read_file tool
+           - If EXISTS: Run it using execute_code_file tool
+           - Check if owners/layout_data.json was created
+
+        4. **WAIT FOR EVALUATOR FEEDBACK** - the evaluator will validate your output
+
+        STEP 2: CREATE/UPDATE SCRIPTS (Only when evaluator finds issues)
+        **EXECUTE THIS ONLY IF:**
+        - Any of the three scripts don't exist, OR
+        - Evaluator found validation errors in any output file
+
+        Actions:
+        1. **READ SCHEMAS FIRST** from ./schemas/ directory:
+           - structure.json - understand required structure fields and enums
+           - utility.json - understand required utility fields and enums
+           - layout.json - understand required layout fields and enums (especially space_type values)
+
+        2. **EXAMINE INPUT FILES** (3-5 samples) to understand:
+           - What structural information is available
+           - What utility information is available  
+           - What layout/room information is available
+           - How room counts are presented (e.g., "2 bed, 1.5 bath")
+
+        3. **CREATE/UPDATE SCRIPTS** as needed:
+
+           A. **STRUCTURE SCRIPT** (scripts/structure_extractor.py):
+           - Read ALL files from ./input/ directory
+           - Handle both JSON and HTML input formats
+           - Extract structure-related information (building type, materials, stories, etc.)
+           - Follow structure.json schema exactly
+           - Use enum values from schema where applicable
+           - Save to: owners/structure_data.json
+           - Format: {{"property_[id]": {{structure data following schema}}}}
+
+           B. **UTILITY SCRIPT** (scripts/utility_extractor.py):
+           - Read ALL files from ./input/ directory
+           - Extract utility system information (HVAC, electrical, plumbing, etc.)
+           - Follow utility.json schema exactly
+           - Use enum values from schema where applicable
+           - Save to: owners/utility_data.json
+           - Format: {{"property_[id]": {{utility data following schema}}}}
+
+           C. **LAYOUT SCRIPT** (scripts/layout_extractor.py):
+           - Read ALL files from ./input/ directory
+           - **ROOM COUNT PARSING**: Parse room descriptions like "2 bed, 1.5 bath"
+           - **CREATE CORRECT NUMBER OF LAYOUT OBJECTS**:
+             * Each bedroom = 1 layout object with space_type="bedroom"
+             * Each full bathroom = 1 layout object with space_type="full_bathroom"
+             * Each half bathroom = 1 layout object with space_type="half_bathroom"
+           - Follow layout.json schema exactly
+           - Use correct space_type enum values
+           - Save to: owners/layout_data.json
+           - Format: {{"property_[id]": {{layout data following schema}}}}
+
+        4. **TEST ALL UPDATED SCRIPTS** - run them and verify output
+
+        🏗️ STRUCTURE DETECTION GUIDELINES:
+        Look for information about:
+        - Building type (residential, commercial, etc.)
+        - Construction materials (wood, brick, concrete, etc.)
+        - Foundation type, roof type and materials
+        - Number of stories/levels, building age and condition
+
+        🔧 UTILITY DETECTION GUIDELINES:
+        Look for information about:
+        - Electrical systems (voltage, panel type, wiring)
+        - Plumbing systems (water supply, drainage, fixtures)
+        - HVAC systems (heating, cooling, ventilation)
+        - Other utilities (gas, internet, cable, etc.)
+
+        🏠 LAYOUT DETECTION GUIDELINES:
+        Look for information about:
+        - Room types and counts (bedrooms, bathrooms, etc.)
+        - Room dimensions and square footage
+        - Space relationships and flow
+        - Special features (fireplaces, built-ins, etc.)
+        - Storage spaces
+        IMPORTANT: Layouts for ALL (bedrooms, full and half bathrooms) must be extracted into distinct layout objects. E.g., 2 beds, 1 full, 1 half bath = 4 layout objects.
+
+        📋 OUTPUT STRUCTURE:
+        Generate three separate files:
+        ```json
+        // owners/structure_data.json
+        {{
+          "property_[id]": {{
+            "building_type": "residential",
+            "construction_material": "wood_frame",
+            "number_of_stories": 2
+            // ... other structure fields per schema
+          }}
+        }}
+
+        // owners/utility_data.json  
+        {{
+          "property_[id]": {{
+            "hvac_system_type": "central_air",
+            "electrical_system": "modern"
+            // ... other utility fields per schema
+          }}
+        }}
+
+        // owners/layout_data.json
+        {{
+          "property_[id]": {{
+            "layouts": [
+              {{"space_type": "bedroom", "room_number": 1}},
+              {{"space_type": "bedroom", "room_number": 2}},
+              {{"space_type": "full_bathroom", "room_number": 1}},
+              {{"space_type": "half_bathroom", "room_number": 1}}
+            ]
+          }}
+        }}
+        ```
+
+        ⚠️ CRITICAL RULES:
+        - **CHECK EXISTING SCRIPTS FIRST** before creating new ones
+        - **RUN EXISTING SCRIPTS** before updating them
+        - **ROOM COUNT ACCURACY** - create exact number of layout objects per actual room count
+        - **NO DATA FABRICATION** - only extract what exists in input
+        - **FOLLOW SCHEMAS EXACTLY** - use correct field names, data types, enum values
+        - Process ALL {self.state['input_files_count']} input files
+
+        🗣️ CONVERSATION RULES:
+        - You are having a conversation with the EVALUATOR
+        - When the evaluator gives you feedback, read it carefully and work in silence to fix the issues
+        - Fix the specific issues they mention without acknowledging
+
+        🚨 WORKFLOW ENFORCEMENT:
+        1. **FIRST**: Check all three existing scripts with read_file tool
+        2. **IF EXIST**: Run them with execute_code_file tool
+        3. **WAIT**: For evaluator feedback
+        4. **IF EVALUATOR REJECTS**: Update specific scripts based on feedback
+
+        🚀 START: **IMMEDIATELY** check for existing scripts, run them if they exist, then wait for evaluator feedback.
+        """
+
+        return create_react_agent(
+            model=self.model,
+            tools=self.tools,
+            prompt=generator_prompt,
+            checkpointer=self.shared_checkpointer
+        )
+
+    async def _create_structure_evaluator_agent(self):
+        """Create Structure Evaluator agent"""
+        evaluator_prompt = f"""
+        You are the STRUCTURE EVALUATOR in a multi-agent structure extraction pipeline.
+
+        🎯 YOUR TASK:
+        You are responsible for **structure/utility/layout data completeness and accuracy validation ONLY**. You must validate that the extracted data matches exactly the content present in the original input files.
+
+        🔍 YOUR VALIDATION FLOW:
+
+        STEP 1: CHECK OUTPUT FILES EXIST
+        1. **Verify all three files exist**:
+           - owners/structure_data.json
+           - owners/utility_data.json  
+           - owners/layout_data.json
+        2. **Count properties** in each file to ensure all input files were processed
+
+        STEP 2: MANDATORY VALIDATION (NEVER SKIP THIS!)
+        For a **sample of 3 properties at most**:
+        1. **Pick at most 3 different input files** from ./input/ directory
+        2. **Read the corresponding entries** from all three output files
+        3. **Validate each data type**:
+
+           A. **STRUCTURE VALIDATION**:
+           - Building type correctly identified from input
+           - Construction materials extracted (not fabricated)
+           - Number of stories matches input data
+           - All structure fields follow structure.json schema
+           - No placeholder values (TODO, TBD, etc.)
+
+           B. **UTILITY VALIDATION**:
+           - HVAC systems correctly identified from input
+           - Electrical systems mentioned in input are captured
+           - Plumbing features from input are extracted
+           - All utility fields follow utility.json schema
+           - No fabricated utility data
+
+           C. **LAYOUT VALIDATION** (CRITICAL):
+           - **ROOM COUNT ACCURACY**: 
+             * Count bedrooms in input → verify correct number of bedroom layout objects
+             * Count full bathrooms → verify correct number of full bathroom layout objects  
+             * Count half bathrooms → verify correct number of half bathroom layout objects
+             * Example: Input shows "3 bed, 2.5 bath" = should have 6 layout objects (3 bedroom + 2 full bath + 1 half bath)
+           - **SPACE TYPE VALIDATION**: Check space_type values match schema enums
+           - **NO FABRICATION**: Ensure layout data comes from input, not invented
+           - All layout fields follow layout.json schema
+
+        STEP 3: SCHEMA COMPLIANCE CHECK
+        - Verify all output files follow their respective schemas exactly
+        - Check data types, required fields, enum values
+        - Ensure no placeholder values
+
+        ✅ VALIDATION CHECKLIST:
+        1. All three output files exist (structure_data.json, utility_data.json, layout_data.json)
+        2. Files contain data for ALL properties in input/ directory
+        3. Structure data accurately reflects input information (not fabricated)
+        4. Utility data matches systems mentioned in input files
+        5. Layout room counts are EXACTLY correct (no more, no fewer objects than actual rooms)
+        6. All space_type values are valid schema enums
+        7. Schema compliance - correct format and data types
+        8. No placeholder/TODO values in any file
+        9. No data fabrication - all data traceable to input sources
+
+        📝 RESPONSE FORMAT:
+        Start your response with one of the following:
+        **STATUS: ACCEPTED** or **STATUS: REJECTED**
+
+        If REJECTED, provide specific action plan:
+        - List exactly what is wrong
+        - Provide step-by-step instructions for the generator to fix issues
+        - Be specific about which data is missing/incorrect/fabricated
+
+        **COMMON ISSUES TO CHECK FOR:**
+        - Missing output files
+        - Incorrect room counts (too many or too few layout objects)
+        - Fabricated data not present in input files
+        - Schema violations (wrong data types, invalid enum values)
+        - Placeholder values instead of real data
+
+        ⚠️ CRITICAL RULES:
+        - **STEP 2 MANUAL VALIDATION IS MANDATORY** - never skip it
+        - **CHECK ROOM COUNTS PRECISELY** for layout validation
+        - **COMPARE WITH SOURCE INPUT FILES** to verify accuracy
+        - Only accept if ALL validation criteria are met
+        - Be strict - any missing, incorrect, or fabricated data = REJECTED
+
+        🗣️ CONVERSATION RULES:
+        - You only care about structure/utility/layout data completeness and extraction accuracy
+        - You must reference specific examples from input files when pointing out problems
+        - Be strict. Accept only if ALL criteria are clearly met
+        - Reply only with STATUS and ACTION PLAN for rejected cases
+
+        🚀 START: Check all three output files exist, validate 3 sample properties against input files, and return your evaluation.
+        """
+
+        return create_react_agent(
+            model=self.model,
+            tools=self.tools,
+            prompt=evaluator_prompt,
+            checkpointer=self.shared_checkpointer
+        )
+
+    async def _agent_speak(self, agent, agent_name: str, turn: int, user_instruction: str) -> str:
+        """Have an agent speak in the conversation - they see all previous messages"""
+        # Copy the exact same implementation from ExtractionGeneratorEvaluatorPair._agent_speak
+        # (Same timeout handling, activity tracking, etc.)
+
+        update_agent_activity(self.state)
+        logger.info(f"     🗣️ {agent_name} speaking (Turn {turn})...")
+        logger.info(f"     👀 {agent_name} using shared checkpointer memory")
+
+        config = {
+            "configurable": {"thread_id": self.shared_thread_id},
+            "recursion_limit": 100
+        }
+
+        messages = [{
+            "role": "user",
+            "content": user_instruction
+        }]
+
+        logger.info(f"     📖 {agent_name} using checkpointer memory...")
+
+        agent_response = ""
+        tool_calls_made = []
+
+        try:
+            timeout_seconds = self.state['agent_timeout_seconds']
+            last_activity = time.time()
+
+            async def check_inactivity():
+                nonlocal last_activity
+                while True:
+                    await asyncio.sleep(10)
+                    current_time = time.time()
+                    if current_time - last_activity > timeout_seconds:
+                        logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
+                        raise asyncio.TimeoutError(f"{agent_name} inactive for {timeout_seconds} seconds")
+
+            inactivity_task = asyncio.create_task(check_inactivity())
+
+            try:
+                async for event in agent.astream_events({"messages": messages}, config, version="v1"):
+                    last_activity = time.time()
+                    update_agent_activity(self.state)
+
+                    kind = event["event"]
+
+                    if kind == "on_chain_start":
+                        logger.info(f"       🔗 {agent_name} chain starting: {event.get('name', 'unknown')}")
+
+                    elif kind == "on_llm_start":
+                        logger.info(f"       🧠 {agent_name} thinking...")
+
+                    elif kind == "on_llm_end":
+                        llm_output = event['data'].get('output', '')
+                        if hasattr(llm_output, 'content'):
+                            content = llm_output.content[:200] + "..." if len(
+                                llm_output.content) > 200 else llm_output.content
+                            logger.info(f"       💭 {agent_name} decided: {content}")
+
+                    elif kind == "on_tool_start":
+                        tool_name = event['name']
+                        tool_input = event['data'].get('input', {})
+                        logger.info(f"       🔧 {agent_name} using tool: {tool_name}")
+                        logger.info(f"       📝 Tool input: {str(tool_input)[:150]}...")
+                        tool_calls_made.append(tool_name)
+
+                    elif kind == "on_tool_end":
+                        tool_name = event['name']
+                        tool_output = event['data'].get('output', '')
+                        success_indicator = "✅" if "error" not in str(tool_output).lower() else "❌"
+
+                        logger.info(f"       {success_indicator} {agent_name} tool {tool_name} completed")
+                        logger.info(f"       📤 Result: {str(tool_output)[:100]}...")
+
+                    elif kind == "on_chain_end":
+                        chain_name = event.get('name', 'unknown')
+                        output = event['data'].get('output', '')
+                        logger.info(f"       🎯 {agent_name} chain completed: {chain_name}")
+
+                        if isinstance(output, dict) and 'messages' in output:
+                            last_message = output['messages'][-1] if output['messages'] else None
+                            if last_message and hasattr(last_message, 'content'):
+                                agent_response = last_message.content
+                        elif hasattr(output, 'content'):
+                            agent_response = output.content
+                        elif isinstance(output, str):
+                            agent_response = output
+
+            finally:
+                inactivity_task.cancel()
+                try:
+                    await inactivity_task
+                except asyncio.CancelledError:
+                    pass
+
+            logger.info(f"     ✅ {agent_name} finished speaking")
+            logger.info(f"     🔧 Tools used: {', '.join(tool_calls_made) if tool_calls_made else 'None'}")
+            logger.info(f"     📄 Response length: {len(agent_response)} characters")
+
+            return agent_response or f"{agent_name} completed turn {turn} (no response captured)"
+
+        except asyncio.TimeoutError:
+            logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
+            logger.error(f"     🔄 This will trigger a restart of the structure extraction process")
+            raise Exception(
+                f"{agent_name} timed out after {timeout_seconds} seconds of inactivity - restarting structure extraction")
         except Exception as e:
             logger.error(f"     ❌ {agent_name} error: {str(e)}")
             return f"{agent_name} error on turn {turn}: {str(e)}"
@@ -922,7 +1584,6 @@ class ExtractionGeneratorEvaluatorPair:
         """Restart the generation process with a fresh thread"""
         logger.info("🔄 RESTARTING GENERATION PROCESS - Creating new thread and agents")
 
-        cleanup_directories()
         self.state['last_agent_activity'] = 0
         # Increment restart counter
         self.state['generation_restart_count'] += 1
@@ -967,7 +1628,7 @@ class ExtractionGeneratorEvaluatorPair:
             agent=generator_agent,
             agent_name="GENERATOR",
             turn=1,
-            user_instruction="Start by creating the extraction script and processing all input files, Make sure to extract all sales-taxes-layouts data  "
+            user_instruction="Start by creating the extraction script and processing all input files, Make sure to extract all sales-taxes-owners data  "
         )
 
         # Continue conversation until all evaluators accept or max turns
@@ -993,7 +1654,13 @@ class ExtractionGeneratorEvaluatorPair:
                     agent=data_evaluator_agent,
                     agent_name="DATA_EVALUATOR",
                     turn=conversation_turn,
-                    user_instruction="Review and evaluate the Generator's extraction work all over Again even if you already accepted it in previous run and validate data completeness by comparing with sample input files and make sure validation points are met, pick 3 different samples to compare, if you already accepted, check again for any new issues that might have been introduced by the generator",
+                    user_instruction="""
+                    you are a restrict reviewer, you have a checklist , you have to make sure every single point in this check list is correct,
+                      your job is to Review and evaluate the Generator's extraction work all over Again even if you already accepted it in previous run"
+                      validate data completeness by comparing with sample input files and make sure validation points are met, pick 3 different samples to compare,
+                      if you already accepted in the previous run, check again for any new issues that might have been introduced by the generator
+                      if REJECTED, REPLY ONLY WITH AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
+                     """,
                 )
             except Exception as e:
                 if "timed out" in str(e):
@@ -1008,6 +1675,7 @@ class ExtractionGeneratorEvaluatorPair:
             logger.info("⚡ CLI Validator running validation...")
             cli_success, cli_errors, _ = run_cli_validator("data")  # Note: 3 return values now
 
+            print(f"🔍 CLI Validator errors: {cli_errors}")
             if cli_success:
                 cli_message = "STATUS: ACCEPTED - CLI validation passed successfully"
                 cli_accepted = True
@@ -1043,6 +1711,7 @@ class ExtractionGeneratorEvaluatorPair:
             if not cli_accepted:
                 feedback_summary += f"CLI Validator feedback: {cli_message}\n\n"
 
+            print(f"🔍 Feedback summary for generator:{feedback_summary}")
             await self._agent_speak(
                 agent=generator_agent,
                 agent_name="GENERATOR",
@@ -1054,8 +1723,10 @@ class ExtractionGeneratorEvaluatorPair:
                 YOU MUST:
                     1. Use the filesystem tools to read/modify the extraction script
                     2. You MUST understand all the root causes of the errors to update data_extraction.py script to fix th extraction errors
-                    3. Fix ALL the specific errors mentioned above
-                    4. run the script 
+                    3. read the Schema inside ./schemas/ directory to understand the required structure, you MUST follow the exact structure provided in the schemas.
+                    4. look AGAIN at the input data to know how you will extract the data OR fix the extraction script
+                    4. Fix ALL the specific errors mentioned above
+                    5. run the script 
 
                 DO NOT just acknowledge - TAKE ACTION NOW with tools to fix these issues.""")
 
@@ -1081,20 +1752,79 @@ class ExtractionGeneratorEvaluatorPair:
 
             🎯 YOUR MISSION: Process ALL {self.state['input_files_count']} files from ./input/ folder 
 
+            🔄 MANDATORY SCRIPT-FIRST WORKFLOW:
+
+            STEP 1: CHECK FOR EXISTING SCRIPT AND RUN IT
+            1. **IMMEDIATELY** check if scripts/data_extractor.py already exists using read_file tool
+            2. If the file EXISTS:
+               - **RUN THE EXISTING SCRIPT** using execute_code_file tool
+               - **CHECK OUTPUT** - verify files were created in ./data/ directory
+               - **WAIT FOR EVALUATOR FEEDBACK** - the evaluators will validate your output
+            3. If the file DOES NOT EXIST → go to STEP 2 to CREATE the script
+
+            STEP 2: CREATE/UPDATE SCRIPT (Only when needed)
+            **EXECUTE THIS ONLY IF:**
+            - No scripts/data_extractor.py exists, OR
+            - Evaluators found validation errors in your output
+
+            Actions for creating/updating script:
+            1. **READ ALL SCHEMAS** from ./schemas/ directory to understand data structures
+            2. **ANALYZE INPUT STRUCTURE** (examine 3-5 sample files)
+            3. **ANALYZE SUPPORTING DATA**:
+               - owners/owners_schema.json (for person/company data)
+               - owners/addresses_mapping.json (for address extraction)
+               - owners/layout_data.json, owners/structure_data.json, owners/utility_data.json
+            4. **CREATE or UPDATE** scripts/data_extractor.py that generates output structure below
+
             📂 REQUIRED OUTPUT STRUCTURE: this output should be generated through a data_extraction.py script
             if any file don't have data, DO NOT create it, example: if input data don't have flood_storm_information don't create this file
             ./data/[property_parcel_id]/property.json
             ./data/[property_parcel_id]/address.json use owners/addresses_mapping.json in address extraction along with the input file
             ./data/[property_parcel_id]/lot.json
-            ./data/[property_parcel_id]/sales_1.json 
-            ./data/[property_parcel_id]/tax_1.json
-            ./data/[property_parcel_id]/layout_1.json (It represents number of space_type inside the property) you need to know what space_type you have from the schema and apply them  if found in the property data, Layouts for ALL (bedrooms, full and half bathrooms) must be extracted into distinct layout objects. E.g., 2 beds, 1 full, 1 half bath = 4 layout files.)
+            ./data/[property_parcel_id]/tax_*.json
             ./data/[property_parcel_id]/flood_storm_information.json
-            ./data/[property_parcel_id]/person.json   or ./data/[property_parcel_id]/company.json extract person/company data from owners/owners_schema.json file
-            and if multiple persons you should have 
-            ./data/[property_parcel_id]/person_1.json
-            ./data/[property_parcel_id]/person_2.json
-            same for company, if there is multiple persons or companies, create multiple files with suffixes.
+            ./data/[property_parcel_id]/sales_*.json
+
+            ./data/[property_parcel_id]/person_*.json   or ./data/[property_parcel_id]/company_*.json  
+            for every sales year extract "EVERY" person and company data for all current/previous owners of each property from owners/owners_schema.json file
+
+            use owners/layout_data.json and owners/structure_data.json and owners/utility_data.json to extract the data
+            ./data/[property_parcel_id]/structure.json
+            ./data/[property_parcel_id]/utility.json
+            ./data/[property_parcel_id]/layout_*.json
+
+            🔗 RELATIONSHIP FILES MAPPING:
+                Create relationship files with these exact structures:
+
+                relationship_sales_person.json (person → property) or relationship_sales_company.json (company → property):
+                to link between the purchase date and the person/company who purchased the property.
+                and if two owners at the same time, you should have multiple files with suffixes contain each have
+                {{
+                    "to": {{
+                        "/": "./person_1.json"
+                    }},
+                    "from": {{
+                        "/": "./sales_2.json"
+                    }}
+                }}
+
+                {{
+                    "to": {{
+                        "/": "./person_2.json"
+                    }},
+                    "from": {{
+                        "/": "./sales_2.json"
+                    }}
+                }}
+                or if it is a company:
+                {{
+                    "to": {{
+                        "/": "./company_1.json"
+                    }},
+                    "from": {{
+                        "/": "./sales_5.json"
+                    }}
+                }}
 
             ⚠️ Generator should detect and extract address components and set them correctly in address class:
                 - street_number
@@ -1123,13 +1853,20 @@ class ExtractionGeneratorEvaluatorPair:
             - Process 10 input file in ./input/ directory
             - Follow the exact schema structure provided
             - Handle missing data gracefully (use null/empty values)
+            - DO NOT invent or fabricate data, you data MUST come directly from the input source.
 
             🗣️ CONVERSATION RULES:
             - You are having a conversation with TWO VALIDATORS: Data Evaluator, and CLI Validator
             - When ANY validator gives you feedback, read it carefully and work in silent to fix the issues
             - Fix the specific issues they mention in silence
 
-            🚀 START WORKING: Begin with input analysis, then create/execute the extraction script.
+            🚨 WORKFLOW ENFORCEMENT:
+            - **FIRST ACTION**: Use read_file tool on scripts/data_extractor.py
+            - **IF EXISTS**: Use execute_code_file tool to run it
+            - **IF DOESN'T EXIST**: Then create it
+            - **IF EVALUATORS REJECT**: Then update the existing script with specific fixes
+
+            🚀 START: **IMMEDIATELY** check for existing script, run it if exists, then wait for evaluator feedback.
             """
 
         return create_react_agent(
@@ -1143,14 +1880,14 @@ class ExtractionGeneratorEvaluatorPair:
         """Create Data Evaluator agent - validates data completeness"""
 
         data_evaluator_prompt = f"""
-            You are the DATA EVALUATOR in a multi-agent data extraction pipeline rseponsible for VALIDATION CHECKLIST execution. You work alongside:
+            You are the restrict DATA EVALUATOR in a multi-agent data extraction pipeline responsible for VALIDATION CHECKLIST execution by comparing input data with output. You work alongside:
 
             - The GENERATOR: generates the extraction script.
-            - The SCHEMA EVALUATOR: validates JSON schema compliance (this is NOT your job).
+            - The SCHEMA EVALUATOR: validates JSON schema compliance (this is NOT your job). NOT CARE ABOUT SCHEMA COMPLIANCE, you only care about data completeness and ACCURACY.
 
             🎯 YOUR TASK:
             You are responsible for **data completeness and accuracy validation ONLY**. You must validate that the extracted data in `./data/` matches exactly the content present in the original raw files in `./input/`.
-
+            you MUST check every point in VALIDATION CHECKLIST 
             You must do **side-by-side comparisons** between the original input files and the extracted output files for 3 properties as a sample.
 
             Do NOT rely solely on output content.
@@ -1167,17 +1904,18 @@ class ExtractionGeneratorEvaluatorPair:
                - **Reject** if any value cannot be verified from the input.
 
             ✅ VALIDATION CHECKLIST: you must ensure the following criteria are met one by one everytime:
-            1. Full data coverage: All information present in the input file must be extracted in county_data_group.json.
-            2. Layouts for ALL (bedrooms, full and half bathrooms) must be extracted into distinct layout objects. E.g., 2 beds, 1.5 bathroom = 4 layout files (2 beds, 1 full bathroom, 1 half bathroom).
-            3. Layout Must represent exactly the number of space_type inside the property NO MORE, if there is 2 bedrooms, 1.5 bathroom, then you should have 4 layout files ONLY.
-            4. Tax history must include ALL years from the input. No years should be missing starting from 2025
-            5. Sales history must include ALL years from the input for this PARCEL ID ONLY. No years should be missing, DO NOT INCLUDE SALES OF SUBDIVISON.
-            6. MAKE SURE you are getting sales for this parcel ID ONLY, do not include sales of subdivision.
-            7. All essential property details must be present (e.g., parcel ID, zoning, square footage, etc.).
-            8. Layouts, persons, and sales must be correctly numbered (e.g., layout_1, layout_2, person_1, etc.).
-            9. No TODO placeholders allowed in the extraction script. Request fixes immediately.
-            10. json files that have all data as null or empty should be removed from the data folder.
-            11. Address is correctly extracted with all components:
+            1. Full data coverage: All information present in the input file must be extracted.
+            2. Layouts for ALL (bedrooms, full and half bathrooms) must be extracted into distinct layout objects. Layout Must represent exactly the number of space_type inside the property NO MORE, if there is 2 bedrooms, 1.5 bathroom, then you should have 4 layout files ONLY (2 beds, 1 full bathroom, 1 half bathroom).
+            3. Tax history must include ALL years from the input. No years should be missing, EVERY "YEAR" IS REPRESENTED BY ONLY AND ONLY "ONE" tax_*.json file.
+            4. current Owners and previous owners must be extracted correctly, if there is multiple owners, you should have multiple files with suffixes. compare with owners/owners_schema.json.
+            5. Each Owner should be represented in "ONE" AND ONLY "ONE" person*.json or company_*.json file.
+            6. relationship_sales_*_person_*.json or relationship_sales_*_company_*.json must be created to link between the EACH sales and its corresponding person/company who purchased the property.
+            7. for every sales year extract "EVERY" person and company data for all current/previous owners of each property from owners/owners_schema.json file
+            8. Sales history must include ALL years from the input for this PARCEL ID ONLY. No years should be missing, DO NOT INCLUDE SALES OF SUBDIVISON.
+            9. MAKE SURE you are getting sales for this parcel ID ONLY, do not include sales of subdivision.
+            10. No TODO placeholders allowed in the extraction script. Request fixes immediately.
+            11. json files that have all data as null or empty should be removed from the data folder.
+            12. Address is correctly extracted with all components:
                 - street_number
                 - street_name
                 - unit_identifier
@@ -1185,6 +1923,8 @@ class ExtractionGeneratorEvaluatorPair:
                 - street_post_directional_text
                 - street_pre_directional_text
                 - street_suffix_type
+            13- MAKE SURE the layout/lot/structure/utility files are NOT fabricated, they must be extracted from the input files, if not attribute missing in the input files, it should be represented as null in the output files, do not invent or fabricate data.
+
 
             📝 RESPONSE FORMAT:
             Start your response with one of the following:
@@ -1192,19 +1932,15 @@ class ExtractionGeneratorEvaluatorPair:
             or
             STATUS: REJECTED
 
-            Then explain only what is necessary:
-            - Data completeness issues: <Only if incomplete>
-            - Missing tax/sales years: <Only if found>
-            - Incomplete person/company classification: <Only if found>
-            - Missing layout information: <Only if found>
-            - Script issues or TODOs: <Only if found>
+             if REJECTED, REPLY ONLY WITH AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
+
 
             🗣️ CONVERSATION RULES:
             - You only care about data completeness and extraction accuracy.
             - You do NOT evaluate schema compliance (that’s the SCHEMA EVALUATOR’s job).
             - You must reference the GENERATOR’s extracted outputs when pointing out problems.
             - Be strict. Accept only if ALL criteria are clearly met.
-            - reply only with the STATUS and the issues found, do not reply with anything else, just reply with the issues found, if any.
+            - reply only with the STATUS and AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
 
             🚀 START: Check data completeness and return your evaluation.
             """
@@ -1347,7 +2083,6 @@ class ExtractionGeneratorEvaluatorPair:
         except asyncio.TimeoutError:
             logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
             logger.error(f"     🔄 This will trigger a restart of the generation process")
-            cleanup_directories()
             raise Exception(
                 f"{agent_name} timed out after {timeout_seconds} seconds of inactivity - restarting generation")
         except Exception as e:
@@ -1369,7 +2104,7 @@ def fetch_schema_from_ipfs(cid):
         try:
             url = f"{gateway}{cid}"
             logger.info(f"Trying to fetch {cid} from {gateway}")
-            response = requests.get(url, timeout=60)
+            response = requests.get(url, timeout=10)
             response.raise_for_status()
             return response.json()
         except Exception as e:
@@ -1378,21 +2113,6 @@ def fetch_schema_from_ipfs(cid):
 
     logger.error(f"Failed to fetch schema from IPFS CID {cid} from all gateways")
     return None
-
-
-def unescape_http_request(http_request):
-    """Decode escaped characters in HTTP request strings"""
-    if not http_request:
-        return None
-
-    # Replace common escape sequences
-    unescaped = http_request.replace('\\r\\n', '\r\n')
-    unescaped = unescaped.replace('\\r', '\r')
-    unescaped = unescaped.replace('\\n', '\n')
-    unescaped = unescaped.replace('\\"', '"')
-    unescaped = unescaped.replace('\\\\', '\\')
-
-    return unescaped
 
 
 def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
@@ -1482,7 +2202,7 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
 
         # Copy data to submit directory with proper naming and build relationships
         copied_count = 0
-        county_data_group_cid = "baguqeerazcgxpl25rebif3ayaiksmpkceyjtkg42diyo6cwj6dgghp7pdida"
+        county_data_group_cid = "bafkreigsqoofbrni7fye3dtsjuvtwv4nmmdzrppvblhzlsq3xpucn5daeq"
 
         # NEW: Collect all relationship building errors
         all_relationship_errors = []
@@ -1507,22 +2227,23 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
                         if file_name.endswith('.json'):
                             json_file_path = os.path.join(dst_folder_path, file_name)
 
+                            if "relation" in file_name.lower():
+                                logger.info(f"   🔗 Skipping relationship file: {file_name}")
+                                continue
+
                             try:
                                 # Read JSON file
                                 with open(json_file_path, 'r', encoding='utf-8') as f:
                                     json_data = json.load(f)
 
-                                # Check if this JSON has source_http_request field
-                                if 'source_http_request' in json_data:
-                                    # Update the JSON data with seed information
-                                    json_data['source_http_request'] = seed_data[folder_name]['source_http_request']
-                                    json_data['request_identifier'] = str(seed_data[folder_name]['source_identifier'])
+                                json_data['source_http_request'] = seed_data[folder_name]['source_http_request']
+                                json_data['request_identifier'] = str(seed_data[folder_name]['source_identifier'])
 
-                                    # Write back to file
-                                    with open(json_file_path, 'w', encoding='utf-8') as f:
-                                        json.dump(json_data, f, indent=2, ensure_ascii=False)
+                                # Write back to file
+                                with open(json_file_path, 'w', encoding='utf-8') as f:
+                                    json.dump(json_data, f, indent=2, ensure_ascii=False)
 
-                                    updated_files_count += 1
+                                updated_files_count += 1
 
                             except json.JSONDecodeError as e:
                                 logger.error(f"   ❌ Error parsing JSON file {json_file_path}: {e}")
@@ -1629,7 +2350,13 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
                         field_name = error_path.split('/')[-1]
 
                         # Create formatted error with field name
-                        formatted_error = f"{field_name} {error_message}"
+                        if field_name.startswith('property_has_'):
+                            # Extract the type after 'property_has_'
+                            info_type = field_name.replace('property_has_', '')
+                            formatted_error = f"{info_type.capitalize()} information are missing"
+                        else:
+                            # Create formatted error with field name for other errors
+                            formatted_error = f"{field_name} {error_message}"
                         unique_errors.add(formatted_error)
 
                     # Format the errors for the generator
@@ -1680,7 +2407,10 @@ def build_relationship_files(folder_path: str) -> tuple[List[str], List[str]]:
 
     # Get all JSON files in the folder
     json_files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
-
+    sales_person_relations = [f for f in json_files if f.startswith('relationship_sales') and 'person' in f]
+    relationship_files.extend(sales_person_relations)
+    sales_company_relations = [f for f in json_files if f.startswith('relationship_sales') and 'company' in f]
+    relationship_files.extend(sales_company_relations)
     # Categorize files
     person_files = [f for f in json_files if f.startswith('person')]
     company_files = [f for f in json_files if f.startswith('company')]
@@ -1691,6 +2421,8 @@ def build_relationship_files(folder_path: str) -> tuple[List[str], List[str]]:
     sales_files = [f for f in json_files if f.startswith('sales')]
     layout_files = [f for f in json_files if f.startswith('layout')]
     flood_files = [f for f in json_files if f.startswith('flood_storm_information')]
+    structure_files = [f for f in json_files if f.startswith('structure')]
+    utility_files = [f for f in json_files if f.startswith('utility')]
 
     # Ensure we have property.json as the main reference
     if not property_files:
@@ -1739,15 +2471,20 @@ def build_relationship_files(folder_path: str) -> tuple[List[str], List[str]]:
         (tax_files, "tax"),
         (sales_files, "sales"),
         (layout_files, "layout"),
-        (flood_files, "flood_storm_information")
+        (flood_files, "flood_storm_information"),
+        (structure_files, "structure"),
+        (utility_files, "utility")
     ]
 
     for files_list, entity_type in relationship_mappings:
         for file in files_list:
             # Extract number suffix if present (e.g., tax_1.json -> _1)
             base_name = file.replace('.json', '')
-            if '_' in base_name:
-                suffix = '_' + base_name.split('_')[-1]
+            if base_name.startswith(entity_type):
+                if len(base_name) > len(entity_type):
+                    suffix = base_name[len(entity_type):]  # Get everything after the entity type
+                else:
+                    suffix = ''  # Just the entity type, no suffix
             else:
                 suffix = ''
 
@@ -1787,7 +2524,11 @@ def create_county_data_group(relationship_files: List[str]) -> Dict[str, Any]:
         "property_has_sales_history": None,
         "property_has_layout": None,
         "property_has_flood_storm_information": None,
-        "property_has_file": None
+        "property_has_file": None,
+        "property_has_structure": None,
+        "property_has_utility": None,
+        "sales_history_has_person": None,
+        "sales_history_has_company": None,
     }
 
     # Categorize relationship files
@@ -1796,6 +2537,8 @@ def create_county_data_group(relationship_files: List[str]) -> Dict[str, Any]:
     tax_relationships = []
     sales_relationships = []
     layout_relationships = []
+    sales_person_relationships = []
+    sales_company_relationships = []
 
     for rel_file in relationship_files:
         ipld_ref = {"/": f"./{rel_file}"}
@@ -1816,6 +2559,14 @@ def create_county_data_group(relationship_files: List[str]) -> Dict[str, Any]:
             layout_relationships.append(ipld_ref)
         elif "property_flood_storm_information" in rel_file:
             all_relationships["property_has_flood_storm_information"] = ipld_ref
+        elif "property_utility" in rel_file:
+            all_relationships["property_has_utility"] = ipld_ref
+        elif "property_structure" in rel_file:
+            all_relationships["property_has_structure"] = ipld_ref
+        elif "relationship_sales" in rel_file and "person" in rel_file:
+            sales_person_relationships.append(ipld_ref)
+        elif "relationship_sales_company" in rel_file and "company" in rel_file:
+            sales_company_relationships.append(ipld_ref)
 
     # Set array relationships
     if person_relationships:
@@ -1828,6 +2579,10 @@ def create_county_data_group(relationship_files: List[str]) -> Dict[str, Any]:
         all_relationships["property_has_sales_history"] = sales_relationships
     if layout_relationships:
         all_relationships["property_has_layout"] = layout_relationships
+    if sales_person_relationships:
+        all_relationships["sales_history_has_person"] = sales_person_relationships
+    if sales_company_relationships:
+        all_relationships["sales_history_has_company"] = sales_company_relationships
 
     # Only include non-null relationships in the final output
     county_data["relationships"] = {k: v for k, v in all_relationships.items()}
@@ -2064,17 +2819,60 @@ async def extraction_and_validation_node(state: WorkflowState) -> WorkflowState:
     return state
 
 
-def cleanup_directories():
-    """Clean up data and submit directories before starting"""
-    directories_to_clean = ["scripts"]
+async def structure_extraction_node(state: WorkflowState) -> WorkflowState:
+    """Enhanced Node 2.5: Handle structure, utility, and layout extraction with validation"""
+    logger.info(
+        f"=== Starting Node 2.5: Structure Extraction & Validation with Evaluator (Attempt {state['retry_count'] + 1}) ===")
 
-    for dir_name in directories_to_clean:
-        dir_path = os.path.join(BASE_DIR, dir_name)
-        if os.path.exists(dir_path):
-            shutil.rmtree(dir_path)
-            logger.info(f"🗑️ Cleaned up {dir_name} directory")
-        os.makedirs(dir_path, exist_ok=True)
-        logger.info(f"📁 Created fresh {dir_name} directory")
+    if state['current_node'] != 'structure_extraction':
+        state['retry_count'] = 0
+    state['current_node'] = 'structure_extraction'
+
+    # Check if already complete
+    structure_path = os.path.join(BASE_DIR, "owners", "structure_data.json")
+    utility_path = os.path.join(BASE_DIR, "owners", "utility_data.json")
+    layout_path = os.path.join(BASE_DIR, "owners", "layout_data.json")
+
+    # Check if any of the files exist (flexible completion check)
+    existing_files = []
+    if os.path.exists(structure_path):
+        existing_files.append("structure_data.json")
+    if os.path.exists(utility_path):
+        existing_files.append("utility_data.json")
+    if os.path.exists(layout_path):
+        existing_files.append("layout_data.json")
+
+    if len(existing_files) >= 1:  # At least one file should exist
+        logger.info(f"Structure extraction already complete - found: {', '.join(existing_files)}")
+        state['structure_extraction_complete'] = True
+        return state
+
+    # Create the generator-evaluator pair
+    structure_gen_eval_pair = StructureGeneratorEvaluatorPair(
+        state=state,
+        model=state['model'],
+        tools=state['tools'],
+        schemas=state['schemas']
+    )
+
+    try:
+        # Run the feedback loop
+        updated_state = await structure_gen_eval_pair.run_feedback_loop()
+
+        # Update the original state with results
+        state.update(updated_state)
+
+        if state['structure_extraction_complete']:
+            logger.info("✅ Structure Generator-Evaluator completed successfully - data extracted and validated")
+        else:
+            logger.warning("⚠️ Structure Generator-Evaluator completed but not all data was properly extracted")
+
+    except Exception as e:
+        logger.error(f"Error in structure generator-evaluator pair: {e}")
+        state['structure_extraction_complete'] = False
+        state['validation_errors'].append(str(e))
+
+    return state
 
 
 def should_retry_owner_analysis(state: WorkflowState) -> str:
@@ -2126,20 +2924,140 @@ def should_retry_address_matching(state: WorkflowState) -> str:
     # Normal completion check
     if state.get('address_matching_complete', False):
         state['retry_count'] = 0  # Reset for next node
-        return "extraction"  # Go to extraction next
+        return "structure_extraction"  # Go to structure extraction next
     elif state['retry_count'] < state['max_retries']:
         state['retry_count'] += 1
         logger.warning(f"Retrying address matching node (attempt {state['retry_count']}/{state['max_retries']})")
         return "address_matching"
     else:
         logger.error("Max retries reached for address matching node")
+        return "structure_extraction"
+
+
+def should_retry_structure_extraction(state: WorkflowState) -> str:
+    """Determine if structure extraction node should retry"""
+
+    # ✅ Check for timeout first
+    if should_restart_due_to_timeout(state):
+        logger.warning("⏰ Structure extraction timeout detected - restarting")
+        state['generation_restart_count'] += 1
+        state['last_agent_activity'] = time.time()
+        return "structure_extraction"  # Restart same node
+
+    # Normal completion check
+    if state.get('structure_extraction_complete', False):
+        state['retry_count'] = 0  # Reset for next node
+        return "extraction"  # Move to extraction next
+    elif state['retry_count'] < state['max_retries']:
+        state['retry_count'] += 1
+        logger.warning(f"Retrying structure extraction node (attempt {state['retry_count']}/{state['max_retries']})")
+        return "structure_extraction"
+    else:
+        logger.error("Max retries reached for structure extraction node")
         return "extraction"
+
+
+def download_scripts_from_github():
+    """Download scripts from GitHub repository if they exist, checking county-specific directories"""
+    repo_url = "https://github.com/elephant-xyz/county-data-extraction-scripts"
+
+    logger.info(f"🔄 Checking GitHub repository: {repo_url}")
+
+    # First, read the county name from seed.csv
+    seed_csv_path = os.path.join(BASE_DIR, "seed.csv")
+    county_name = None
+
+    if os.path.exists(seed_csv_path):
+        try:
+            import pandas as pd
+            seed_df = pd.read_csv(seed_csv_path)
+            if 'County' in seed_df.columns and len(seed_df) > 0:
+                county_name = str(seed_df['County'].iloc[0]).strip()
+                logger.info(f"📍 Found county: {county_name}")
+            else:
+                logger.error("❌ No 'county' column found in seed.csv or file is empty")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Error reading seed.csv: {e}")
+            return False
+    else:
+        logger.error("❌ seed.csv file not found")
+        return False
+
+    if not county_name:
+        logger.error("❌ Could not determine county name")
+        return False
+
+    try:
+        # Create a temporary directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logger.info(f"📁 Cloning repository to temporary directory...")
+
+            # Clone the repository
+            repo = git.Repo.clone_from(repo_url, temp_dir)
+            logger.info("✅ Repository cloned successfully")
+
+            # Check county-specific directory (scripts are directly in county folder)
+            county_dir = os.path.join(temp_dir, county_name)
+            logger.info(f"🔍 Looking for scripts in: {county_name}/")
+
+            if os.path.exists(county_dir) and os.path.isdir(county_dir):
+                # Copy scripts from county directory
+                local_scripts_dir = os.path.join(BASE_DIR, "scripts")
+                os.makedirs(local_scripts_dir, exist_ok=True)
+
+                # Copy all Python files from county directory to local scripts directory
+                copied_files = []
+                for file in os.listdir(county_dir):
+                    if file.endswith('.py'):
+                        src = os.path.join(county_dir, file)
+                        dst = os.path.join(local_scripts_dir, file)
+                        shutil.copy2(src, dst)
+                        copied_files.append(file)
+                        logger.info(f"📄 Copied: {file}")
+
+                if copied_files:
+                    logger.info(f"✅ Downloaded {len(copied_files)} scripts from {county_name}/ directory")
+                    return True
+                else:
+                    logger.warning(f"⚠️ No Python scripts found in {county_name}/ directory")
+                    return False
+            else:
+                logger.warning(f"⚠️ No '{county_name}/' directory found in repository")
+
+                # Fallback: try to find any county directories
+                logger.info("🔍 Looking for available county directories...")
+                available_counties = []
+                for item in os.listdir(temp_dir):
+                    item_path = os.path.join(temp_dir, item)
+                    if os.path.isdir(item_path) and not item.startswith('.'):
+                        # Check if directory has any Python files
+                        py_files = [f for f in os.listdir(item_path) if f.endswith('.py')]
+                        if py_files:
+                            available_counties.append(f"{item} ({len(py_files)} scripts)")
+
+                if available_counties:
+                    logger.info(f"📂 Available county directories with scripts: {', '.join(available_counties)}")
+                else:
+                    logger.warning("📂 No county directories with scripts found")
+
+                return False
+
+    except git.GitCommandError as e:
+        logger.error(f"❌ Git error: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Failed to download scripts from GitHub: {e}")
+        return False
 
 
 async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
-    cleanup_directories()
     # Load schemas from IPFS
+    logger.info("Downloading scripts from GitHub repository...")
+    if not download_scripts_from_github():
+        logger.error("Failed to download scripts from GitHub repository - exiting")
+
     logger.info("Loading schemas from IPFS and saving to ./schemas/ directory...")
     schemas, stub_files = load_schemas_from_ipfs(save_to_disk=True)
 
@@ -2219,6 +3137,7 @@ async def run_three_node_workflow():
         extraction_complete=False,
         address_matching_complete=False,
         owner_analysis_complete=False,
+        structure_extraction_complete=False,
         validation_errors=[],
         processed_properties=[],
         current_node="owner_analysis",
@@ -2243,6 +3162,7 @@ async def run_three_node_workflow():
     # Add nodes
     workflow.add_node("owner_analysis", owner_analysis_node)
     workflow.add_node("address_matching", address_matching_node)
+    workflow.add_node("structure_extraction", structure_extraction_node)
     workflow.add_node("extraction", extraction_and_validation_node)
 
     workflow.add_conditional_edges(
@@ -2259,7 +3179,16 @@ async def run_three_node_workflow():
         should_retry_address_matching,
         {
             "address_matching": "address_matching",  # Retry same node
-            "extraction": "extraction"  # Move to extraction (not end)
+            "structure_extraction": "structure_extraction"
+        }
+    )
+
+    workflow.add_conditional_edges(
+        "structure_extraction",
+        should_retry_structure_extraction,
+        {
+            "structure_extraction": "structure_extraction",  # Retry same node
+            "extraction": "extraction"  # Move to extraction
         }
     )
 
