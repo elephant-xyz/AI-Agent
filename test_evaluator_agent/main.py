@@ -1658,6 +1658,7 @@ class ExtractionGeneratorEvaluatorPair:
                     you are a restrict reviewer, you have a checklist , you have to make sure every single point in this check list is correct,
                       your job is to Review and evaluate the Generator's extraction work all over Again even if you already accepted it in previous run"
                       validate data completeness by comparing with sample input files and make sure validation points are met, pick 3 different samples to compare,
+                      DO NOT repeat yourself, if generator persisted in an output makesure you are correct and revalidate yourself
                       if you already accepted in the previous run, check again for any new issues that might have been introduced by the generator
                       if REJECTED, REPLY ONLY WITH AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
                      """,
@@ -1940,6 +1941,7 @@ class ExtractionGeneratorEvaluatorPair:
             - You do NOT evaluate schema compliance (that’s the SCHEMA EVALUATOR’s job).
             - You must reference the GENERATOR’s extracted outputs when pointing out problems.
             - Be strict. Accept only if ALL criteria are clearly met.
+            - DO NOT repeat yourself or your reply all over again, if generator persisted in an output makesure you are correct and revalidate yourself
             - reply only with the STATUS and AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
 
             🚀 START: Check data completeness and return your evaluation.
