@@ -24,7 +24,13 @@ from langchain_mcp_adapters.client import (
 from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path=os.path.expanduser("~/.env"))
+# Try to load .env from multiple locations
+for env_path in [".env", os.path.expanduser("~/.env")]:
+    if os.path.exists(env_path):
+        load_dotenv(dotenv_path=env_path)
+        break
+else:
+    load_dotenv()  # fallback to default behavior
 
 # logger = logging.getLogger(__name__)
 #
