@@ -24,7 +24,7 @@ from langchain_mcp_adapters.client import (
 from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(dotenv_path=os.path.expanduser("~/.env"))
 
 # logger = logging.getLogger(__name__)
 #
