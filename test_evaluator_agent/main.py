@@ -3018,9 +3018,9 @@ def download_scripts_from_github():
 async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
     # Load schemas from IPFS
-    # logger.info("Downloading scripts from GitHub repository...")
-    # if not download_scripts_from_github():
-    #     logger.error("Failed to download scripts from GitHub repository - exiting")
+    logger.info("Downloading scripts from GitHub repository...")
+    if not download_scripts_from_github():
+        logger.error("Failed to download scripts from GitHub repository - exiting")
 
     logger.info("Loading schemas from IPFS and saving to ./schemas/ directory...")
     schemas, stub_files = load_schemas_from_ipfs(save_to_disk=True)
