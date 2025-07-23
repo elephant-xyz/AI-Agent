@@ -1592,7 +1592,7 @@ class ExtractionGeneratorEvaluatorPair:
                     user_instruction="""
                     you are a restrict reviewer, you have a checklist , you have to make sure every single point in this check list is correct,
                       your job is to Review and evaluate the Generator's extraction work all over Again even if you already accepted it in previous run"
-                      validate data completeness by comparing with sample input files and make sure validation points are met, pick 3 different samples to compare,
+                      validate data completeness by comparing with sample input files and make sure validation points are met, pick AT MOST 3 different samples to compare,
                       DO NOT repeat yourself, if generator persisted in an output makesure you are correct and revalidate yourself
                       if you already accepted in the previous run, check again for any new issues that might have been introduced by the generator
                       if REJECTED, REPLY ONLY WITH AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
@@ -1824,7 +1824,7 @@ class ExtractionGeneratorEvaluatorPair:
             🔍 YOUR VALIDATION PROCESS:
 
             STEP 1: **YOU PERSONALLY EXAMINE THE DATA**
-            1. **Read 3 sample input files** from ./input/ directory yourself
+            1. **Read AT MOST 3 sample input files** from ./input/ directory yourself
             2. **Read the corresponding output folders** in ./data/ directory yourself  
             3. **Compare them side-by-side** yourself
             4. **Count and verify** the data yourself
@@ -3018,9 +3018,9 @@ def download_scripts_from_github():
 async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
     # Load schemas from IPFS
-    logger.info("Downloading scripts from GitHub repository...")
-    if not download_scripts_from_github():
-        logger.error("Failed to download scripts from GitHub repository - exiting")
+    # logger.info("Downloading scripts from GitHub repository...")
+    # if not download_scripts_from_github():
+    #     logger.error("Failed to download scripts from GitHub repository - exiting")
 
     logger.info("Loading schemas from IPFS and saving to ./schemas/ directory...")
     schemas, stub_files = load_schemas_from_ipfs(save_to_disk=True)
