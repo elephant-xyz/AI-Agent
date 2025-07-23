@@ -23,14 +23,13 @@ from langchain_mcp_adapters.client import (
 )
 from langgraph.prebuilt import create_react_agent
 
-logger = logging.getLogger(__name__)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
+#
+# # Configure logging
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+# )
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0"))
@@ -56,6 +55,31 @@ SCHEMA_CIDS = {
     "structure.json": "bafkreictnk74jkby6q64d3vm6h57s6vr5x65p2wzubpwvwsjil2254okhi",
     "utility.json": "bafkreib3wrmiwqyi34xdengoyud4aplz5rbsjs6vag4eic4n7ohturx6xq"
 }
+
+# Create logs directory
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+# Configure logging to file
+log_file_path = os.path.join(LOGS_DIR, f"workflow_{int(time.time())}.log")
+
+# Create file handler for detailed logs
+file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+file_handler.setFormatter(file_formatter)
+
+# Create console handler for status messages only
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.CRITICAL)  # Only show critical messages
+
+# Configure root logger
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[file_handler, console_handler]
+)
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowState(TypedDict):
@@ -104,6 +128,25 @@ def should_restart_due_to_timeout(state: WorkflowState) -> bool:
     """Check if we should restart due to agent timeout"""
     return (is_agent_frozen(state) and
             state['generation_restart_count'] < state['max_generation_restarts'])
+
+
+def print_status(message):
+    """Print status messages to terminal only"""
+    print(f"STATUS: {message}")
+    logger.info(f"STATUS: {message}")  # Also log to file
+
+
+def print_running(node_name):
+    """Print running status"""
+    print(f"🔄 RUNNING: {node_name}")
+    logger.info(f"RUNNING: {node_name}")
+
+
+def print_completed(node_name, success=True):
+    """Print completion status"""
+    status = "✅ COMPLETED" if success else "❌ FAILED"
+    print(f"{status}: {node_name}")
+    logger.info(f"COMPLETED: {node_name} - Success: {success}")
 
 
 class OwnerAnalysisAgent:
@@ -2650,6 +2693,7 @@ async def owner_analysis_node(state: WorkflowState) -> WorkflowState:
     # Check if already complete
     owners_schema_path = os.path.join(BASE_DIR, "owners", "owners_schema.json")
     owners_extracted_path = os.path.join(BASE_DIR, "owners", "owners_extracted.json")
+    print_running("Owner Analysis")
 
     if os.path.exists(owners_schema_path):
         logger.info("Owner analysis already complete - both files exist")
@@ -2701,6 +2745,7 @@ async def address_matching_node(state: WorkflowState) -> WorkflowState:
     if state['current_node'] != 'address_matching':
         state['retry_count'] = 0
     state['current_node'] = 'address_matching'
+    print_running("Address Matching")
 
     # Check if already complete
     if check_address_matching_complete(state):
@@ -2748,6 +2793,7 @@ async def extraction_and_validation_node(state: WorkflowState) -> WorkflowState:
     if state['current_node'] != 'extraction':
         state['retry_count'] = 0
     state['current_node'] = 'extraction'
+    print_running("Data Extraction & Validation")
 
     # Check if already complete
     if check_extraction_complete(state):
@@ -2792,6 +2838,7 @@ async def structure_extraction_node(state: WorkflowState) -> WorkflowState:
     if state['current_node'] != 'structure_extraction':
         state['retry_count'] = 0
     state['current_node'] = 'structure_extraction'
+    print_running("Structure Extraction")
 
     # Check if already complete
     structure_path = os.path.join(BASE_DIR, "owners", "structure_data.json")
@@ -3179,8 +3226,10 @@ async def run_three_node_workflow():
         # Log final status
         if final_state['owner_analysis_complete'] and final_state['all_addresses_matched'] and final_state[
             'all_files_processed']:
+            print_status("Workflow completed successfully - all tasks completed")
             logger.info("✅ Workflow completed successfully - all tasks completed")
         else:
+            print_status("Workflow completed with incomplete tasks")
             logger.warning("⚠️ Workflow completed with incomplete tasks")
             if not final_state['owner_analysis_complete']:
                 logger.warning("- Owner analysis was not completed")
