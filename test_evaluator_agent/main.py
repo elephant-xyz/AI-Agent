@@ -767,7 +767,7 @@ class AddressMatchingGeneratorEvaluatorPair:
         Run the validation script and analyze the results, ALL ADDRESSES MUST BE VALID AGAINST THE SCHEMA.
 
         STEP 3: MANUAL VALIDATION
-        For a **sample of 3–5 properties**:
+        For a **sample of AT MOST 3–5 properties**:
         1. **Check if owners/addresses_mapping.json exists** and has content
         2. do a checksum to make sure all properties address are extracted
         3. you MUST **Verify address components** are properly extracted, everysingle attribute must be verified that it exists:
@@ -2279,7 +2279,7 @@ def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
 
         try:
             result = subprocess.run(
-                ["npx", "-y", "@elephant-xyz/cli", "validate-and-upload", "submit", "--dry-run", "--output-csv",
+                ["npx", "-y", "@elephant-xyz/cli@1.12.0", "validate-and-upload", "submit", "--dry-run", "--output-csv",
                  "results.csv"],
                 cwd=BASE_DIR,
                 capture_output=True,
@@ -3018,9 +3018,9 @@ def download_scripts_from_github():
 async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
     # Load schemas from IPFS
-    # logger.info("Downloading scripts from GitHub repository...")
-    # if not download_scripts_from_github():
-    #     logger.error("Failed to download scripts from GitHub repository - exiting")
+    logger.info("Downloading scripts from GitHub repository...")
+    if not download_scripts_from_github():
+        logger.error("Failed to download scripts from GitHub repository - exiting")
 
     logger.info("Loading schemas from IPFS and saving to ./schemas/ directory...")
     schemas, stub_files = load_schemas_from_ipfs(save_to_disk=True)
