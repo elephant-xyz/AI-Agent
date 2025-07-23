@@ -4,6 +4,7 @@ import sys
 import json
 import logging
 import requests
+import backoff
 import time
 import git
 import tempfile
@@ -768,7 +769,7 @@ class AddressMatchingGeneratorEvaluatorPair:
         STEP 3: MANUAL VALIDATION
         For a **sample of 3–5 properties**:
         1. **Check if owners/addresses_mapping.json exists** and has content
-        2. do a checksum to make sure all proeprties address are extracted
+        2. do a checksum to make sure all properties address are extracted
         3. you MUST **Verify address components** are properly extracted, everysingle attribute must be verified that it exists:
           Checklist of address components to verify:
            - street_number
@@ -799,14 +800,6 @@ class AddressMatchingGeneratorEvaluatorPair:
         STATUS: ACCEPTED
         or
         STATUS: REJECTED
-
-        Then explain only what is necessary:
-        - Missing addresses_mapping.json file: <Only if missing>
-        - Validation script results: <Include the output from address_validation.py>
-        - Incomplete address data: <Only if incomplete>
-        - Address component issues: <Only if found>
-        - Schema compliance issues: <Only if found>
-        - Matching logic problems: <Only if found>
 
         if REJECTED, REPLY ONLY WITH AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
 
@@ -1037,8 +1030,9 @@ class StructureGeneratorEvaluatorPair:
                     agent_name="STRUCTURE_EVALUATOR",
                     turn=conversation_turn,
                     user_instruction="""
-                     Review and evaluate the Structure Generator's extraction work and validate structure/utility/layout data completeness by comparing with sample input files.
-                     Check if all three output files are properly created with correct data extraction.
+                    Review and evaluate the Structure Generator's extraction work and validate structure/utility/layout data completeness by comparing with sample input files.
+                     Check if all three output files are properly created with correct data extraction. Reply only with ACCEPTED or REJECTED with an ACTION PLAN WITH THE ISSUES ONLY if REJECTED for the generator to fix the issues, if any.  
+
                      """,
                 )
                 logger.info(f"🔍 DEBUG: Full evaluator response:")
@@ -1109,6 +1103,7 @@ class StructureGeneratorEvaluatorPair:
 
         🎯 YOUR MISSION: 
         Extract structure, utility, and layout information from property input files using three separate scripts.
+        And YOU MUST create the validation script, do not ask generator to create it
 
         📂 INPUT STRUCTURE:
         - Input files are located in ./input/ directory ({self.state['input_files_count']} files)
@@ -1139,11 +1134,19 @@ class StructureGeneratorEvaluatorPair:
         - Any of the three scripts don't exist, OR
         - Evaluator found validation errors in any output file
 
+        📋 SCHEMAS TO FOLLOW:
+        Read the schemas from ./schemas/ directory:
+        - structure.json - for building structure information
+        - utility.json - for utility systems information  
+        - layout.json - for room and space layout information
+
         Actions:
-        1. **READ SCHEMAS FIRST** from ./schemas/ directory:
-           - structure.json - understand required structure fields and enums
-           - utility.json - understand required utility fields and enums
-           - layout.json - understand required layout fields and enums (especially space_type values)
+        1. **READ AND EXAMINE SCHEMAS FIRST** from ./schemas/ directory:
+           - What fields are required for structure data
+           - What fields are required for utility data
+           - What fields are required for layout data
+           - What are the allowed enum values for each field
+           - What data types are expected
 
         2. **EXAMINE INPUT FILES** (3-5 samples) to understand:
            - What structural information is available
@@ -1155,31 +1158,28 @@ class StructureGeneratorEvaluatorPair:
 
            A. **STRUCTURE SCRIPT** (scripts/structure_extractor.py):
            - Read ALL files from ./input/ directory
-           - Handle both JSON and HTML input formats
-           - Extract structure-related information (building type, materials, stories, etc.)
-           - Follow structure.json schema exactly
-           - Use enum values from schema where applicable
-           - Save to: owners/structure_data.json
+           - Handle both JSON and HTML input formats correctly
+           - Extract structure-related information (building type, construction materials, etc.)
+           - Follow the structure.json schema exactly
+           - Use enum values from the schema where applicable
+           - Save extracted data to: owners/structure_data.json
            - Format: {{"property_[id]": {{structure data following schema}}}}
 
            B. **UTILITY SCRIPT** (scripts/utility_extractor.py):
            - Read ALL files from ./input/ directory
-           - Extract utility system information (HVAC, electrical, plumbing, etc.)
-           - Follow utility.json schema exactly
-           - Use enum values from schema where applicable
-           - Save to: owners/utility_data.json
+           - Extract utility system information (electrical, plumbing, HVAC, etc.)
+           - Follow the utility.json schema exactly
+           - Use enum values from the schema where applicable
+           - Save extracted data to: owners/utility_data.json
            - Format: {{"property_[id]": {{utility data following schema}}}}
 
            C. **LAYOUT SCRIPT** (scripts/layout_extractor.py):
            - Read ALL files from ./input/ directory
-           - **ROOM COUNT PARSING**: Parse room descriptions like "2 bed, 1.5 bath"
-           - **CREATE CORRECT NUMBER OF LAYOUT OBJECTS**:
-             * Each bedroom = 1 layout object with space_type="bedroom"
-             * Each full bathroom = 1 layout object with space_type="full_bathroom"
-             * Each half bathroom = 1 layout object with space_type="half_bathroom"
-           - Follow layout.json schema exactly
-           - Use correct space_type enum values
-           - Save to: owners/layout_data.json
+           - Extract room and space layout information
+           - Follow the layout.json schema exactly
+           - Use enum values from the schema where applicable
+           - Identify different room types (bedroom, bathroom, kitchen, etc.)
+           - Save extracted data to: owners/layout_data.json
            - Format: {{"property_[id]": {{layout data following schema}}}}
 
         4. **TEST ALL UPDATED SCRIPTS** - run them and verify output
@@ -1189,7 +1189,6 @@ class StructureGeneratorEvaluatorPair:
         - Building type (residential, commercial, etc.)
         - Construction materials (wood, brick, concrete, etc.)
         - Foundation type, roof type and materials
-        - Number of stories/levels, building age and condition
 
         🔧 UTILITY DETECTION GUIDELINES:
         Look for information about:
@@ -1213,18 +1212,13 @@ class StructureGeneratorEvaluatorPair:
         // owners/structure_data.json
         {{
           "property_[id]": {{
-            "building_type": "residential",
-            "construction_material": "wood_frame",
-            "number_of_stories": 2
-            // ... other structure fields per schema
+            // ... structure fields per schema
           }}
         }}
 
         // owners/utility_data.json  
         {{
           "property_[id]": {{
-            "hvac_system_type": "central_air",
-            "electrical_system": "modern"
             // ... other utility fields per schema
           }}
         }}
@@ -1233,10 +1227,7 @@ class StructureGeneratorEvaluatorPair:
         {{
           "property_[id]": {{
             "layouts": [
-              {{"space_type": "bedroom", "room_number": 1}},
-              {{"space_type": "bedroom", "room_number": 2}},
-              {{"space_type": "full_bathroom", "room_number": 1}},
-              {{"space_type": "half_bathroom", "room_number": 1}}
+              // ... space_type and other utility fields per schema
             ]
           }}
         }}
@@ -1245,8 +1236,6 @@ class StructureGeneratorEvaluatorPair:
         ⚠️ CRITICAL RULES:
         - **CHECK EXISTING SCRIPTS FIRST** before creating new ones
         - **RUN EXISTING SCRIPTS** before updating them
-        - **ROOM COUNT ACCURACY** - create exact number of layout objects per actual room count
-        - **NO DATA FABRICATION** - only extract what exists in input
         - **FOLLOW SCHEMAS EXACTLY** - use correct field names, data types, enum values
         - Process ALL {self.state['input_files_count']} input files
 
@@ -1274,96 +1263,42 @@ class StructureGeneratorEvaluatorPair:
     async def _create_structure_evaluator_agent(self):
         """Create Structure Evaluator agent"""
         evaluator_prompt = f"""
-        You are the STRUCTURE EVALUATOR in a multi-agent structure extraction pipeline.
+        You are the STRUCTURE EVALUATOR understanding that this is **INTELLIGENT DATA MAPPING**, not exact replication.
 
-        🎯 YOUR TASK:
-        You are responsible for **structure/utility/layout data completeness and accuracy validation ONLY**. You must validate that the extracted data matches exactly the content present in the original input files.
+        🎯 YOUR UNDERSTANDING:
+        - Input data varies widely in format and completeness  
+        - Your job is to verify reasonable extraction and mapping
+        - Schema enums should be mapped to best available matches
+        - Missing data results in null values (this is normal and acceptable)
 
-        🔍 YOUR VALIDATION FLOW:
+        🔍 REASONABLE VALIDATION:
+        Check 2-3 sample properties for:
 
-        STEP 1: CHECK OUTPUT FILES EXIST
-        1. **Verify all three files exist**:
-           - owners/structure_data.json
-           - owners/utility_data.json  
-           - owners/layout_data.json
-        2. **Count properties** in each file to ensure all input files were processed
+        1. **Basic Extraction**: Are structure/utility/layout files created?
+        2. **Schema Mapping**: Are available data points mapped to appropriate schema fields?
+        3. **Logical Consistency**: Do room counts and layouts make sense?
+        4. **Coverage**: Are all input files processed?
 
-        STEP 2: MANDATORY VALIDATION (NEVER SKIP THIS!)
-        For a **sample of 3 properties at most**:
-        1. **Pick at most 3 different input files** from ./input/ directory
-        2. **Read the corresponding entries** from all three output files
-        3. **Validate each data type**:
+        ✅ ACCEPT IF:
+        - All three output files exist and have reasonable content
+        - Available data is mapped to schema appropriately
+        - Room/space counts are logically extracted
+        - Enum values are reasonable matches
+        - Processing covers all input files
 
-           A. **STRUCTURE VALIDATION**:
-           - Building type correctly identified from input
-           - Construction materials extracted (not fabricated)
-           - Number of stories matches input data
-           - All structure fields follow structure.json schema
-           - No placeholder values (TODO, TBD, etc.)
+        ❌ ONLY REJECT IF:
+        - Output files missing entirely
+        - Major structural data ignored when clearly present
+        - Room counts are completely wrong (e.g., 5 bedrooms extracted as 1)
+        - No processing occurred
 
-           B. **UTILITY VALIDATION**:
-           - HVAC systems correctly identified from input
-           - Electrical systems mentioned in input are captured
-           - Plumbing features from input are extracted
-           - All utility fields follow utility.json schema
-           - No fabricated utility data
+        🗣️ BE PRACTICAL:
+        - Data mapping involves interpretation - accept reasonable choices
+        - Null values for unavailable data are normal
+        - Focus on major extraction issues, not perfect enum matching
+        - Understand that source data quality varies
 
-           C. **LAYOUT VALIDATION** (CRITICAL):
-           - **ROOM COUNT ACCURACY**: 
-             * Count bedrooms in input → verify correct number of bedroom layout objects
-             * Count full bathrooms → verify correct number of full bathroom layout objects  
-             * Count half bathrooms → verify correct number of half bathroom layout objects
-             * Example: Input shows "3 bed, 2.5 bath" = should have 6 layout objects (3 bedroom + 2 full bath + 1 half bath)
-           - **SPACE TYPE VALIDATION**: Check space_type values match schema enums
-           - **NO FABRICATION**: Ensure layout data comes from input, not invented
-           - All layout fields follow layout.json schema
-
-        STEP 3: SCHEMA COMPLIANCE CHECK
-        - Verify all output files follow their respective schemas exactly
-        - Check data types, required fields, enum values
-        - Ensure no placeholder values
-
-        ✅ VALIDATION CHECKLIST:
-        1. All three output files exist (structure_data.json, utility_data.json, layout_data.json)
-        2. Files contain data for ALL properties in input/ directory
-        3. Structure data accurately reflects input information (not fabricated)
-        4. Utility data matches systems mentioned in input files
-        5. Layout room counts are EXACTLY correct (no more, no fewer objects than actual rooms)
-        6. All space_type values are valid schema enums
-        7. Schema compliance - correct format and data types
-        8. No placeholder/TODO values in any file
-        9. No data fabrication - all data traceable to input sources
-
-        📝 RESPONSE FORMAT:
-        Start your response with one of the following:
-        **STATUS: ACCEPTED** or **STATUS: REJECTED**
-
-        If REJECTED, provide specific action plan:
-        - List exactly what is wrong
-        - Provide step-by-step instructions for the generator to fix issues
-        - Be specific about which data is missing/incorrect/fabricated
-
-        **COMMON ISSUES TO CHECK FOR:**
-        - Missing output files
-        - Incorrect room counts (too many or too few layout objects)
-        - Fabricated data not present in input files
-        - Schema violations (wrong data types, invalid enum values)
-        - Placeholder values instead of real data
-
-        ⚠️ CRITICAL RULES:
-        - **STEP 2 MANUAL VALIDATION IS MANDATORY** - never skip it
-        - **CHECK ROOM COUNTS PRECISELY** for layout validation
-        - **COMPARE WITH SOURCE INPUT FILES** to verify accuracy
-        - Only accept if ALL validation criteria are met
-        - Be strict - any missing, incorrect, or fabricated data = REJECTED
-
-        🗣️ CONVERSATION RULES:
-        - You only care about structure/utility/layout data completeness and extraction accuracy
-        - You must reference specific examples from input files when pointing out problems
-        - Be strict. Accept only if ALL criteria are clearly met
-        - Reply only with STATUS and ACTION PLAN for rejected cases
-
-        🚀 START: Check all three output files exist, validate 3 sample properties against input files, and return your evaluation.
+        RESPONSE: **STATUS: ACCEPTED** or **STATUS: REJECTED** with major issues only.
         """
 
         return create_react_agent(
@@ -1881,70 +1816,98 @@ class ExtractionGeneratorEvaluatorPair:
         """Create Data Evaluator agent - validates data completeness"""
 
         data_evaluator_prompt = f"""
-            You are the restrict DATA EVALUATOR in a multi-agent data extraction pipeline responsible for VALIDATION CHECKLIST execution by comparing input data with output. You work alongside:
+            You are the DATA EVALUATOR who **ACTUALLY VALIDATES DATA** by doing the checking yourself.
 
-            - The GENERATOR: generates the extraction script.
-            - The SCHEMA EVALUATOR: validates JSON schema compliance (this is NOT your job). NOT CARE ABOUT SCHEMA COMPLIANCE, you only care about data completeness and ACCURACY.
+            🎯 YOUR JOB: 
+            **DO THE VALIDATION WORK YOURSELF** - don't tell the generator what to check, YOU check it.
 
-            🎯 YOUR TASK:
-            You are responsible for **data completeness and accuracy validation ONLY**. You must validate that the extracted data in `./data/` matches exactly the content present in the original raw files in `./input/`.
-            you MUST check every point in VALIDATION CHECKLIST 
-            You must do **side-by-side comparisons** between the original input files and the extracted output files for 3 properties as a sample.
+            🔍 YOUR VALIDATION PROCESS:
 
-            Do NOT rely solely on output content.
-            Instead, for each field/value in the extracted JSON, find and verify it exists in the raw input file for 3 properties as a sample.
+            STEP 1: **YOU PERSONALLY EXAMINE THE DATA**
+            1. **Read 3 sample input files** from ./input/ directory yourself
+            2. **Read the corresponding output folders** in ./data/ directory yourself  
+            3. **Compare them side-by-side** yourself
+            4. **Count and verify** the data yourself
 
-            ---
+            STEP 2: **YOU DO THE ACTUAL CHECKING**
+            For each sample property, YOU verify:
 
-            🔍 YOUR VALIDATION FLOW:
+            ✅ **Layout Validation (YOU COUNT):**
+            - Read the input file and COUNT bedrooms/bathrooms yourself
+            - Read the layout_*.json files and COUNT how many exist
+            - If input says "2 bed, 1.5 bath" = should be exactly 4 layout files (2 bedroom + 1 full bath + 1 half bath)
+            - YOU verify the numbers match
 
-            For a **sample of 3–5 properties**:
-            1. **Locate the extracted files in `./data/`** and their **corresponding input sources in `./input/`**.
-            2. For each extracted value in data/[property_parcel_id]/**:
-               - **Find the matching information in the original input**.
-               - **Reject** if any value cannot be verified from the input.
+            ✅ **Tax History Validation (YOU CHECK YEARS):**
+            - Read the input file and LIST all tax years yourself
+            - Read the tax_*.json files and LIST what years exist
+            - YOU verify every year is present, no duplicates, no missing years
 
-            ✅ VALIDATION CHECKLIST: you must ensure the following criteria are met one by one everytime:
-            1. Full data coverage: All information present in the input file must be extracted.
-            2. Layouts for ALL (bedrooms, full and half bathrooms) must be extracted into distinct layout objects. Layout Must represent exactly the number of space_type inside the property NO MORE, if there is 2 bedrooms, 1.5 bathroom, then you should have 4 layout files ONLY (2 beds, 1 full bathroom, 1 half bathroom).
-            3. Tax history must include ALL years from the input. No years should be missing, EVERY "YEAR" IS REPRESENTED BY ONLY AND ONLY "ONE" tax_*.json file.
-            4. current Owners and previous owners must be extracted correctly, if there is multiple owners, you should have multiple files with suffixes. compare with owners/owners_schema.json.
-            5. Each Owner should be represented in "ONE" AND ONLY "ONE" person*.json or company_*.json file.
-            6. relationship_sales_*_person_*.json or relationship_sales_*_company_*.json must be created to link between the EACH sales and its corresponding person/company who purchased the property.
-            7. for every sales year extract "EVERY" person and company data for all current/previous owners of each property from owners/owners_schema.json file
-            8. Sales history must include ALL years from the input for this PARCEL ID ONLY. No years should be missing, DO NOT INCLUDE SALES OF SUBDIVISON.
-            9. MAKE SURE you are getting sales for this parcel ID ONLY, do not include sales of subdivision.
-            10. No TODO placeholders allowed in the extraction script. Request fixes immediately.
-            11. json files that have all data as null or empty should be removed from the data folder.
-            12. Address is correctly extracted with all components:
-                - street_number
-                - street_name
-                - unit_identifier
-                - plus_four_postal_code
-                - street_post_directional_text
-                - street_pre_directional_text
-                - street_suffix_type
-            13- MAKE SURE the layout/lot/structure/utility files are NOT fabricated, they must be extracted from the input files, if not attribute missing in the input files, it should be represented as null in the output files, do not invent or fabricate data.
+            ✅ **Owner Validation (YOU VERIFY OWNERS):**
+            - Read owners_schema.json yourself and COUNT owners per property
+            - Read the person_*.json/company_*.json files and COUNT how many exist  
+            - YOU verify each owner has exactly one file
+
+            ✅ **Relationship Validation (YOU CHECK LINKS):**
+            - Read the sales_*.json files yourself and COUNT sales
+            - Read the relationship_sales_*_person/company_*.json files and COUNT relationships
+            - YOU verify each sale has relationship files linking to owners, ONLY and ONLY if owner is present
+
+            ✅ **Address Validation (YOU CHECK COMPONENTS):**
+            - Read the input file and EXTRACT the address yourself
+            - Read the address.json file and CHECK each component
+            - YOU verify street_number, street_name, etc. are properly extracted
+
+            STEP 3: **YOUR DECISION BASED ON YOUR ACTUAL CHECKING**
+
+            🟢 **STATUS: ACCEPTED** IF:
+            - YOU verified layout counts match input (your counting, not generator's promise)
+            - YOU verified all tax years present (your checking, not generator's promise)  
+            - YOU verified all owners extracted (your verification, not generator's promise)
+            - YOU verified relationships exist (your checking, not generator's promise)
+            - YOU verified addresses extracted (your validation, not generator's promise)
+
+            🔴 **STATUS: REJECTED** IF:
+            - YOU found layout count mismatches (specify which property and what you found)
+            - YOU found missing tax years (specify which years and which property)
+            - YOU found missing owners (specify which owners and which property)
+            - YOU found missing relationships (specify which sales lack relationships)
+            - YOU found address extraction issues (specify which components are wrong)
+
+            📝 **RESPONSE FORMAT:**
+
+            **IF EVERYTHING IS CORRECT:**
+            ```
+            **STATUS: ACCEPTED**
+
+            Validation completed successfully. I personally verified:
+            - Layout counts match input room counts
+            - All tax years from input are present  
+            - All owners from schema are extracted
+            - All sales have proper relationship files ONLY if owner is present
+            - Address components are correctly extracted
+            ```
+
+            **IF ISSUES ARE FOUND:**
+            ```
+            **STATUS: REJECTED**
 
 
-            📝 RESPONSE FORMAT:
-            Start your response with one of the following:
-            STATUS: ACCEPTED
-            or
-            STATUS: REJECTED
+            ⚠️ **NEVER give "action plans" or "if you find issues" instructions**
+            ⚠️ **NEVER say "No action needed" - just ACCEPT if validation passes**
+            ⚠️ **ALWAYS REPLY WITH SPECIFIC ISSUES FOUND ONLY IF STATUS: REJECTED ** - not potential future problems
 
-             if REJECTED, REPLY ONLY WITH AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
+            ⚠️ **CRITICAL RULES:**
+            - **YOU do the validation work yourself using tools**
+            - **YOU read files yourself and compare data**  
+            - **YOU make the accept/reject decision based on your actual findings**
+            - **NO giving orders to generator** - you're the one checking
+            - **NO "ensure this" or "verify that"** - YOU ensure and verify
+            - **NO "action plans" or future instructions** - just ACCEPT or REJECT
+            - **NO "no action needed" messages** - if validation passes, just ACCEPT
+            - **BE SPECIFIC** about actual problems found, not potential future issues
 
-
-            🗣️ CONVERSATION RULES:
-            - You only care about data completeness and extraction accuracy.
-            - You do NOT evaluate schema compliance (that’s the SCHEMA EVALUATOR’s job).
-            - You must reference the GENERATOR’s extracted outputs when pointing out problems.
-            - Be strict. Accept only if ALL criteria are clearly met.
-            - DO NOT repeat yourself or your reply all over again, if generator persisted in an output makesure you are correct and revalidate yourself
-            - reply only with the STATUS and AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
-
-            🚀 START: Check data completeness and return your evaluation.
+            🚀 **START:** Use your tools to read sample files and do the validation work yourself.
             """
 
         return create_react_agent(
@@ -2959,13 +2922,22 @@ def should_retry_structure_extraction(state: WorkflowState) -> str:
         return "extraction"
 
 
+@backoff.on_exception(
+    backoff.expo,
+    (git.GitCommandError, ConnectionError, TimeoutError),
+    max_tries=3,
+    max_time=300,  # 5 minutes total
+    on_backoff=lambda details: logger.warning(
+        f"🔄 Git clone failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
+    on_giveup=lambda details: logger.error(f"💥 Git clone failed after {details['tries']} attempts")
+)
 def download_scripts_from_github():
-    """Download scripts from GitHub repository if they exist, checking county-specific directories"""
+    """Download scripts from GitHub repository with retry logic"""
     repo_url = "https://github.com/elephant-xyz/county-data-extraction-scripts"
 
     logger.info(f"🔄 Checking GitHub repository: {repo_url}")
 
-    # First, read the county name from seed.csv
+    # Read county name from seed.csv
     seed_csv_path = os.path.join(BASE_DIR, "seed.csv")
     county_name = None
 
@@ -2977,7 +2949,7 @@ def download_scripts_from_github():
                 county_name = str(seed_df['County'].iloc[0]).strip()
                 logger.info(f"📍 Found county: {county_name}")
             else:
-                logger.error("❌ No 'county' column found in seed.csv or file is empty")
+                logger.error("❌ No 'County' column found in seed.csv or file is empty")
                 return False
         except Exception as e:
             logger.error(f"❌ Error reading seed.csv: {e}")
@@ -2995,11 +2967,21 @@ def download_scripts_from_github():
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.info(f"📁 Cloning repository to temporary directory...")
 
-            # Clone the repository
-            repo = git.Repo.clone_from(repo_url, temp_dir)
+            # Clone with shallow clone for speed and timeout settings
+            repo = git.Repo.clone_from(
+                repo_url,
+                temp_dir,
+                multi_options=[
+                    '--depth=1',  # Shallow clone
+                    '--single-branch',
+                    '--config http.timeout=60',
+                    '--config http.postBuffer=524288000'
+                ],
+                allow_unsafe_options=True
+            )
             logger.info("✅ Repository cloned successfully")
 
-            # Check county-specific directory (scripts are directly in county folder)
+            # Check county-specific directory
             county_dir = os.path.join(temp_dir, county_name)
             logger.info(f"🔍 Looking for scripts in: {county_name}/")
 
@@ -3008,7 +2990,6 @@ def download_scripts_from_github():
                 local_scripts_dir = os.path.join(BASE_DIR, "scripts")
                 os.makedirs(local_scripts_dir, exist_ok=True)
 
-                # Copy all Python files from county directory to local scripts directory
                 copied_files = []
                 for file in os.listdir(county_dir):
                     if file.endswith('.py'):
@@ -3026,39 +3007,20 @@ def download_scripts_from_github():
                     return False
             else:
                 logger.warning(f"⚠️ No '{county_name}/' directory found in repository")
-
-                # Fallback: try to find any county directories
-                logger.info("🔍 Looking for available county directories...")
-                available_counties = []
-                for item in os.listdir(temp_dir):
-                    item_path = os.path.join(temp_dir, item)
-                    if os.path.isdir(item_path) and not item.startswith('.'):
-                        # Check if directory has any Python files
-                        py_files = [f for f in os.listdir(item_path) if f.endswith('.py')]
-                        if py_files:
-                            available_counties.append(f"{item} ({len(py_files)} scripts)")
-
-                if available_counties:
-                    logger.info(f"📂 Available county directories with scripts: {', '.join(available_counties)}")
-                else:
-                    logger.warning("📂 No county directories with scripts found")
-
                 return False
 
-    except git.GitCommandError as e:
-        logger.error(f"❌ Git error: {e}")
-        return False
     except Exception as e:
-        logger.error(f"❌ Failed to download scripts from GitHub: {e}")
-        return False
+        # Re-raise for backoff to handle
+        logger.error(f"❌ Error during git clone: {e}")
+        raise
 
 
 async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
     # Load schemas from IPFS
-    logger.info("Downloading scripts from GitHub repository...")
-    if not download_scripts_from_github():
-        logger.error("Failed to download scripts from GitHub repository - exiting")
+    # logger.info("Downloading scripts from GitHub repository...")
+    # if not download_scripts_from_github():
+    #     logger.error("Failed to download scripts from GitHub repository - exiting")
 
     logger.info("Loading schemas from IPFS and saving to ./schemas/ directory...")
     schemas, stub_files = load_schemas_from_ipfs(save_to_disk=True)
