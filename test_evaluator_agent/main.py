@@ -22,6 +22,9 @@ from langchain_mcp_adapters.client import (
     StdioConnection,
 )
 from langgraph.prebuilt import create_react_agent
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # logger = logging.getLogger(__name__)
 #
