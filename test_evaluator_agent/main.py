@@ -101,6 +101,7 @@ class WorkflowState(TypedDict):
     address_matching_complete: bool
     owner_analysis_complete: bool
     structure_extraction_complete: bool
+    image_extraction_complete: bool  # New field for image extraction
     validation_errors: List[str]
     processed_properties: List[str]
     current_node: str
@@ -1466,6 +1467,410 @@ class StructureGeneratorEvaluatorPair:
             logger.error(f"     🔄 This will trigger a restart of the structure extraction process")
             raise Exception(
                 f"{agent_name} timed out after {timeout_seconds} seconds of inactivity - restarting structure extraction")
+        except Exception as e:
+            logger.error(f"     ❌ {agent_name} error: {str(e)}")
+            return f"{agent_name} error on turn {turn}: {str(e)}"
+
+
+class ImageExtractionGeneratorEvaluatorPair:
+    """Generator and Evaluator for image extraction from property HTML files"""
+    
+    def __init__(self, state: WorkflowState, model, tools, schemas: Dict[str, Any]):
+        self.state = state
+        self.model = model
+        self.tools = tools
+        self.schemas = schemas
+        self.max_conversation_turns = 10
+        self.shared_checkpointer = InMemorySaver()
+        self.shared_thread_id = "image-extraction-conversation-1"
+        self.consecutive_script_failures = 0
+        self.max_script_failures = 3
+    
+    async def _restart_generation_process(self) -> WorkflowState:
+        """Restart the generation process with a fresh thread"""
+        logger.info("🔄 RESTARTING IMAGE EXTRACTION PROCESS - Creating new thread and agents")
+        
+        self.state['last_agent_activity'] = 0
+        self.state['generation_restart_count'] += 1
+        
+        # Create new thread ID for fresh start
+        self.shared_thread_id = f"image-extraction-conversation-restart-{self.state['generation_restart_count']}"
+        self.shared_checkpointer = InMemorySaver()
+        
+        # Reset conversation state
+        self.max_conversation_turns = 10
+        
+        logger.info(f"🆕 Starting fresh image extraction attempt #{self.state['generation_restart_count']}")
+        logger.info(f"🆕 New thread ID: {self.shared_thread_id}")
+        
+        return await self.run_feedback_loop()
+    
+    async def run_feedback_loop(self) -> WorkflowState:
+        """Run Image Extraction Generator + Evaluator CONVERSATION"""
+        
+        logger.info("🔄 Starting Image Extraction Generator + Evaluator CONVERSATION")
+        logger.info(f"💬 Using shared thread: {self.shared_thread_id}")
+        logger.info(f"🎭 Two agents: Generator, Evaluator")
+        
+        # Create agents
+        generator_agent = await self._create_image_generator_agent()
+        evaluator_agent = await self._create_image_evaluator_agent()
+        
+        conversation_turn = 0
+        evaluator_accepted = False
+        
+        # GENERATOR STARTS: Create initial script
+        logger.info("🤖 Image Generator starts the conversation...")
+        
+        try:
+            await self._agent_speak(
+                agent=generator_agent,
+                agent_name="IMAGE_GENERATOR",
+                turn=1,
+                user_instruction="Start by creating the image extraction and download scripts"
+            )
+        except Exception as e:
+            if "timed out" in str(e):
+                logger.warning("⏰ Agent timeout during initial IMAGE_GENERATOR - restarting")
+                return await self._restart_generation_process()
+            raise
+        
+        # Continue conversation until evaluator accepts or max turns
+        while conversation_turn < self.max_conversation_turns:
+            conversation_turn += 1
+            
+            if hasattr(self, 'force_restart_now') and self.force_restart_now:
+                logger.warning("🔄 Image extraction script failure restart triggered - restarting now")
+                self.force_restart_now = False
+                return await self._restart_generation_process()
+            
+            if should_restart_due_to_timeout(self.state):
+                logger.warning("⏰ Agent timeout detected - restarting image extraction process")
+                return await self._restart_generation_process()
+            
+            logger.info(f"💬 Image Extraction Turn {conversation_turn}/{self.max_conversation_turns}")
+            
+            # EVALUATOR RESPONDS
+            logger.info("📊 Image Evaluator reviews Generator's work...")
+            
+            try:
+                evaluator_message = await self._agent_speak(
+                    agent=evaluator_agent,
+                    agent_name="IMAGE_EVALUATOR",
+                    turn=conversation_turn,
+                    user_instruction="""
+                    Review and evaluate the Image Generator's extraction work. Check if:
+                    1. The image link extraction script correctly identifies property images (not ads/icons)
+                    2. The download script properly downloads and organizes images
+                    3. Both scripts handle errors gracefully
+                    Reply only with STATUS: ACCEPTED or STATUS: REJECTED with specific issues if rejected.
+                    """
+                )
+                logger.info(f"🔍 DEBUG: Full evaluator response:")
+                logger.info(f"📝 {evaluator_message}")
+            except Exception as e:
+                if "timed out" in str(e):
+                    logger.warning("⏰ Agent timeout during IMAGE_EVALUATOR - restarting")
+                    return await self._restart_generation_process()
+                raise
+            
+            evaluator_accepted = "STATUS: ACCEPTED" in evaluator_message
+            logger.info(f"📊 Image Evaluator decision: {'ACCEPTED' if evaluator_accepted else 'NEEDS FIXES'}")
+            
+            # Check if evaluator accepted
+            if evaluator_accepted:
+                logger.info("✅ Image extraction conversation completed successfully - Evaluator approved!")
+                self.state['image_extraction_complete'] = True
+                break
+            
+            # GENERATOR RESPONDS: Sees feedback from evaluator and fixes issues
+            logger.info("🤖 Image Generator responds to evaluator's feedback...")
+            
+            await self._agent_speak(
+                agent=generator_agent,
+                agent_name="IMAGE_GENERATOR",
+                turn=conversation_turn + 1,
+                user_instruction=f"""IMMEDIATE ACTION REQUIRED.
+                Fix the image extraction issues found by the evaluator immediately.
+                
+                Specific issues to fix:
+                {evaluator_message}
+                
+                YOU MUST:
+                1. Use the filesystem tools to read/modify the image extraction scripts
+                2. Fix ALL the specific errors mentioned above
+                3. Test your changes by running the scripts
+                4. Ensure images are properly extracted and downloaded
+                
+                DO NOT just acknowledge - TAKE ACTION NOW with tools to fix these issues."""
+            )
+            
+            logger.info(f"🔄 Image extraction turn {conversation_turn} complete, continuing conversation...")
+        
+        # Conversation ended
+        final_status = "ACCEPTED" if evaluator_accepted else "PARTIAL"
+        
+        if final_status != "ACCEPTED":
+            logger.warning(f"⚠️ Image extraction conversation ended without full success after {self.max_conversation_turns} turns")
+        
+        logger.info(f"💬 Image extraction conversation completed with status: {final_status}")
+        return self.state
+    
+    async def _create_image_generator_agent(self):
+        """Create Image Generator agent"""
+        
+        generator_prompt = f"""
+        You are the IMAGE GENERATOR - an expert in web scraping and image extraction.
+        
+        🎯 YOUR MISSION: 
+        Create two scripts to extract and download property images from HTML files.
+        
+        📂 INPUT STRUCTURE:
+        - Input files are located in ./input/ directory ({self.state['input_files_count']} HTML files)
+        - Files contain property information including images
+        
+        🔄 MANDATORY SCRIPT-FIRST WORKFLOW:
+        
+        STEP 1: CHECK FOR EXISTING SCRIPTS AND RUN THEM
+        1. **CHECK IMAGE EXTRACTION SCRIPT**:
+           - Check if scripts/image_extractor.py exists using read_file tool
+           - If EXISTS: Run it using execute_code_file tool
+           - Check if owners/property_images.json was created
+        
+        2. **CHECK IMAGE DOWNLOAD SCRIPT**:
+           - Check if scripts/image_downloader.py exists using read_file tool  
+           - If EXISTS: Run it using execute_code_file tool
+           - Check if images/ directory has downloaded images
+        
+        3. **WAIT FOR EVALUATOR FEEDBACK**
+        
+        STEP 2: CREATE/UPDATE SCRIPTS (Only when needed)
+        
+        Actions:
+        1. **EXAMINE INPUT FILES** (3-5 samples) to understand:
+           - HTML structure and image locations
+           - Types of images present (property photos, floor plans, etc.)
+           - Image URL patterns and formats
+        
+        2. **CREATE/UPDATE SCRIPTS**:
+        
+        A. **IMAGE EXTRACTION SCRIPT** (scripts/image_extractor.py):
+           - Parse ALL HTML files from ./input/ directory
+           - Extract ONLY property-related images:
+             * Property photos (exterior/interior views)
+             * Floor plans or blueprints
+             * Property maps or aerial views
+           - EXCLUDE non-property images:
+             * Website logos or icons
+             * Advertisement banners
+             * Navigation buttons
+             * Social media icons
+           - Detection strategies:
+             * Check img alt text for property-related keywords
+             * Check parent div classes/ids for property context
+             * Check image dimensions (property images are usually larger)
+             * Check src URL patterns (often contain 'property', 'listing', etc.)
+           - Save to: owners/property_images.json
+           - Format:
+           ```json
+           {{
+             "property_[id]": {{
+               "images": [
+                 {{
+                   "url": "https://...",
+                   "type": "exterior/interior/floorplan/aerial",
+                   "alt_text": "...",
+                   "context": "found in div with class..."
+                 }}
+               ]
+             }}
+           }}
+           ```
+        
+        B. **IMAGE DOWNLOAD SCRIPT** (scripts/image_downloader.py):
+           - Read owners/property_images.json
+           - Create images/ directory structure:
+             * images/property_[id]/exterior/
+             * images/property_[id]/interior/
+             * images/property_[id]/floorplan/
+             * images/property_[id]/aerial/
+           - Download images with:
+             * Proper error handling (404, timeouts, etc.)
+             * Retry logic with exponential backoff
+             * Progress logging
+             * File naming: property_[id]_[type]_[index].[ext]
+           - Handle various image formats (jpg, png, webp, etc.)
+           - Skip already downloaded images
+           - Create download summary: images/download_summary.json
+        
+        3. **TEST BOTH SCRIPTS** - run them and verify output
+        
+        🖼️ IMAGE DETECTION GUIDELINES:
+        Property images typically:
+        - Have larger dimensions (width > 300px)
+        - Contain keywords: property, house, home, listing, view, bedroom, kitchen, etc.
+        - Are in main content areas (not headers/footers)
+        - Have meaningful alt text
+        - Are not base64 encoded icons
+        
+        ⚠️ CRITICAL RULES:
+        - **CHECK EXISTING SCRIPTS FIRST** before creating new ones
+        - **RUN EXISTING SCRIPTS** before updating them
+        - Process ALL {self.state['input_files_count']} input files
+        - Be selective - only extract true property images
+        - Handle network errors gracefully
+        
+        🚀 START: **IMMEDIATELY** check for existing scripts, run them if they exist, then wait for evaluator feedback.
+        """
+        
+        return create_react_agent(
+            model=self.model,
+            tools=self.tools,
+            prompt=generator_prompt,
+            checkpointer=self.shared_checkpointer
+        )
+    
+    async def _create_image_evaluator_agent(self):
+        """Create Image Evaluator agent"""
+        
+        evaluator_prompt = f"""
+        You are the IMAGE EVALUATOR - validating image extraction and download quality.
+        
+        🎯 YOUR TASK:
+        Validate that the image extraction and download scripts work correctly.
+        
+        🔍 VALIDATION CHECKLIST:
+        
+        1. **Image Extraction Script**:
+           - Does scripts/image_extractor.py exist?
+           - Does it parse HTML files correctly?
+           - Does it filter out non-property images?
+           - Is owners/property_images.json created with proper structure?
+           - Are image URLs valid and complete?
+        
+        2. **Image Download Script**:
+           - Does scripts/image_downloader.py exist?
+           - Does it create proper directory structure?
+           - Does it handle errors gracefully?
+           - Are images actually downloaded?
+           - Is download_summary.json created?
+        
+        3. **Quality Checks**:
+           - Sample 2-3 properties from property_images.json
+           - Verify URLs look like real property images (not icons/ads)
+           - Check if downloaded images exist in correct folders
+           - Verify error handling for failed downloads
+        
+        ✅ ACCEPT IF:
+        - Both scripts exist and run without critical errors
+        - Property images are correctly identified (not ads/icons)
+        - Images are downloaded to organized folders
+        - Error handling is implemented
+        
+        ❌ REJECT IF:
+        - Scripts are missing or have syntax errors
+        - Extracting website UI elements as property images
+        - No images extracted when HTML clearly contains them
+        - Download script fails without proper error handling
+        
+        RESPONSE: **STATUS: ACCEPTED** or **STATUS: REJECTED** with specific issues.
+        """
+        
+        return create_react_agent(
+            model=self.model,
+            tools=self.tools,
+            prompt=evaluator_prompt,
+            checkpointer=self.shared_checkpointer
+        )
+    
+    async def _agent_speak(self, agent, agent_name: str, turn: int, user_instruction: str) -> str:
+        """Have an agent speak in the conversation"""
+        # Implementation identical to other agent classes
+        update_agent_activity(self.state)
+        
+        logger.info(f"     🗣️ {agent_name} speaking (Turn {turn})...")
+        logger.info(f"     👀 {agent_name} using shared checkpointer memory")
+        
+        config = {
+            "configurable": {"thread_id": self.shared_thread_id},
+            "recursion_limit": 100
+        }
+        
+        messages = [{
+            "role": "user",
+            "content": user_instruction
+        }]
+        
+        logger.info(f"     📖 {agent_name} using checkpointer memory...")
+        
+        agent_response = ""
+        tool_calls_made = []
+        
+        try:
+            timeout_seconds = self.state['agent_timeout_seconds']
+            last_activity = time.time()
+            
+            async def check_inactivity():
+                nonlocal last_activity
+                while True:
+                    await asyncio.sleep(10)
+                    current_time = time.time()
+                    if current_time - last_activity > timeout_seconds:
+                        logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
+                        raise asyncio.TimeoutError(f"{agent_name} inactive for {timeout_seconds} seconds")
+            
+            inactivity_task = asyncio.create_task(check_inactivity())
+            
+            try:
+                async for event in agent.astream_events({"messages": messages}, config, version="v1"):
+                    last_activity = time.time()
+                    update_agent_activity(self.state)
+                    
+                    kind = event["event"]
+                    
+                    if kind == "on_tool_start":
+                        tool_name = event['name']
+                        tool_input = event['data'].get('input', {})
+                        logger.info(f"       🔧 {agent_name} using tool: {tool_name}")
+                        logger.info(f"       📝 Tool input: {str(tool_input)[:150]}...")
+                        tool_calls_made.append(tool_name)
+                    
+                    elif kind == "on_tool_end":
+                        tool_name = event['name']
+                        tool_output = event['data'].get('output', '')
+                        success_indicator = "✅" if "error" not in str(tool_output).lower() else "❌"
+                        
+                        if tool_name == "execute_code_file":
+                            if "error" in str(tool_output).lower():
+                                self.consecutive_script_failures += 1
+                                logger.warning(f"       ❌ Script execution failed ({self.consecutive_script_failures}/{self.max_script_failures})")
+                            else:
+                                self.consecutive_script_failures = 0
+                        
+                        logger.info(f"       {success_indicator} {agent_name} tool {tool_name} completed")
+                        logger.info(f"       📤 Result: {str(tool_output)[:100]}...")
+                    
+                    elif kind == "on_chain_end":
+                        output = event['data'].get('output', '')
+                        if isinstance(output, dict) and 'messages' in output:
+                            last_message = output['messages'][-1] if output['messages'] else None
+                            if last_message and hasattr(last_message, 'content'):
+                                agent_response = last_message.content
+            
+            finally:
+                inactivity_task.cancel()
+                try:
+                    await inactivity_task
+                except asyncio.CancelledError:
+                    pass
+            
+            logger.info(f"     ✅ {agent_name} finished speaking")
+            return agent_response or f"{agent_name} completed turn {turn}"
+        
+        except asyncio.TimeoutError:
+            logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT")
+            raise Exception(f"{agent_name} timed out - restarting")
+        
         except Exception as e:
             logger.error(f"     ❌ {agent_name} error: {str(e)}")
             return f"{agent_name} error on turn {turn}: {str(e)}"
@@ -2896,6 +3301,57 @@ async def structure_extraction_node(state: WorkflowState) -> WorkflowState:
     return state
 
 
+async def image_extraction_node(state: WorkflowState) -> WorkflowState:
+    """Node 3: Handle image extraction and downloading from property HTML files"""
+    logger.info(
+        f"=== Starting Node 3: Image Extraction & Download (Attempt {state['retry_count'] + 1}) ===")
+    
+    if state['current_node'] != 'image_extraction':
+        state['retry_count'] = 0
+    state['current_node'] = 'image_extraction'
+    print_running("Image Extraction")
+    
+    # Check if already complete
+    property_images_path = os.path.join(BASE_DIR, "owners", "property_images.json")
+    download_summary_path = os.path.join(BASE_DIR, "images", "download_summary.json")
+    
+    if os.path.exists(property_images_path) and os.path.exists(download_summary_path):
+        logger.info("Image extraction already complete - both files exist")
+        state['image_extraction_complete'] = True
+        print_completed("Image Extraction", success=True)
+        return state
+    
+    # Create the generator-evaluator pair
+    image_gen_eval_pair = ImageExtractionGeneratorEvaluatorPair(
+        state=state,
+        model=state['model'],
+        tools=state['tools'],
+        schemas=state['schemas']
+    )
+    
+    try:
+        # Run the feedback loop
+        updated_state = await image_gen_eval_pair.run_feedback_loop()
+        
+        # Update the original state with results
+        state.update(updated_state)
+        
+        if state['image_extraction_complete']:
+            logger.info("✅ Image Extraction Generator-Evaluator completed successfully - images extracted and downloaded")
+            print_completed("Image Extraction", success=True)
+        else:
+            logger.warning("⚠️ Image Extraction Generator-Evaluator completed but not all images were properly processed")
+            print_completed("Image Extraction", success=False)
+    
+    except Exception as e:
+        logger.error(f"Error in image extraction generator-evaluator pair: {e}")
+        state['image_extraction_complete'] = False
+        state['validation_errors'].append(str(e))
+        print_completed("Image Extraction", success=False)
+    
+    return state
+
+
 def should_retry_owner_analysis(state: WorkflowState) -> str:
     """Determine if owner analysis node should retry"""
 
@@ -2968,13 +3424,36 @@ def should_retry_structure_extraction(state: WorkflowState) -> str:
     # Normal completion check
     if state.get('structure_extraction_complete', False):
         state['retry_count'] = 0  # Reset for next node
-        return "extraction"  # Move to extraction next
+        return "image_extraction"  # Move to image extraction next
     elif state['retry_count'] < state['max_retries']:
         state['retry_count'] += 1
         logger.warning(f"Retrying structure extraction node (attempt {state['retry_count']}/{state['max_retries']})")
         return "structure_extraction"
     else:
         logger.error("Max retries reached for structure extraction node")
+        return "image_extraction"
+
+
+def should_retry_image_extraction(state: WorkflowState) -> str:
+    """Determine if image extraction node should retry"""
+
+    # ✅ Check for timeout first
+    if should_restart_due_to_timeout(state):
+        logger.warning("⏰ Image extraction timeout detected - restarting")
+        state['generation_restart_count'] += 1
+        state['last_agent_activity'] = time.time()
+        return "image_extraction"  # Restart same node
+
+    # Normal completion check
+    if state.get('image_extraction_complete', False):
+        state['retry_count'] = 0  # Reset for next node
+        return "extraction"  # Move to data extraction next
+    elif state['retry_count'] < state['max_retries']:
+        state['retry_count'] += 1
+        logger.warning(f"Retrying image extraction node (attempt {state['retry_count']}/{state['max_retries']})")
+        return "image_extraction"
+    else:
+        logger.error("Max retries reached for image extraction node")
         return "extraction"
 
 
@@ -3158,6 +3637,7 @@ async def run_three_node_workflow():
         address_matching_complete=False,
         owner_analysis_complete=False,
         structure_extraction_complete=False,
+        image_extraction_complete=False,
         validation_errors=[],
         processed_properties=[],
         current_node="owner_analysis",
@@ -3183,6 +3663,7 @@ async def run_three_node_workflow():
     workflow.add_node("owner_analysis", owner_analysis_node)
     workflow.add_node("address_matching", address_matching_node)
     workflow.add_node("structure_extraction", structure_extraction_node)
+    workflow.add_node("image_extraction", image_extraction_node)
     workflow.add_node("extraction", extraction_and_validation_node)
 
     workflow.add_conditional_edges(
@@ -3208,7 +3689,16 @@ async def run_three_node_workflow():
         should_retry_structure_extraction,
         {
             "structure_extraction": "structure_extraction",  # Retry same node
-            "extraction": "extraction"  # Move to extraction
+            "image_extraction": "image_extraction"  # Move to image extraction
+        }
+    )
+
+    workflow.add_conditional_edges(
+        "image_extraction",
+        should_retry_image_extraction,
+        {
+            "image_extraction": "image_extraction",  # Retry same node
+            "extraction": "extraction"  # Move to data extraction
         }
     )
 
