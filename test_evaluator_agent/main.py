@@ -1480,7 +1480,7 @@ class ImageExtractionGeneratorEvaluatorPair:
         self.model = model
         self.tools = tools
         self.schemas = schemas
-        self.max_conversation_turns = 10
+        self.max_conversation_turns = 5  # Reduced from 10 to prevent token buildup
         self.shared_checkpointer = InMemorySaver()
         self.shared_thread_id = "image-extraction-conversation-1"
         self.consecutive_script_failures = 0
@@ -1620,167 +1620,58 @@ class ImageExtractionGeneratorEvaluatorPair:
         """Create Image Generator agent"""
         
         generator_prompt = f"""
-        You are the IMAGE GENERATOR - an expert in web scraping and image extraction.
+        You are the IMAGE GENERATOR. Create scripts to extract and download property images.
         
-        🎯 YOUR MISSION: 
-        Create two scripts to extract and download property images from HTML files.
+        WORKFLOW:
+        1. Check if scripts/image_extractor.py and scripts/image_downloader.py exist
+        2. If exist, run them and wait for evaluator
+        3. If not, create them:
         
-        📂 INPUT STRUCTURE:
-        - Input files are located in ./input/ directory ({self.state['input_files_count']} HTML files)
-        - Files contain property information including images
+        IMAGE EXTRACTOR (scripts/image_extractor.py):
+        - Parse HTML files in ./input/
+        - Extract ONLY property images (photos, floor plans)
+        - Skip icons, ads, logos (check size, alt text, context)
+        - Save to owners/property_images.json
         
-        🔄 MANDATORY SCRIPT-FIRST WORKFLOW:
+        IMAGE DOWNLOADER (scripts/image_downloader.py):
+        - Read property_images.json
+        - Download to images/property_[id]/[type]/
+        - Handle errors, retry logic
+        - Create download_summary.json
         
-        STEP 1: CHECK FOR EXISTING SCRIPTS AND RUN THEM
-        1. **CHECK IMAGE EXTRACTION SCRIPT**:
-           - Check if scripts/image_extractor.py exists using read_file tool
-           - If EXISTS: Run it using execute_code_file tool
-           - Check if owners/property_images.json was created
-        
-        2. **CHECK IMAGE DOWNLOAD SCRIPT**:
-           - Check if scripts/image_downloader.py exists using read_file tool  
-           - If EXISTS: Run it using execute_code_file tool
-           - Check if images/ directory has downloaded images
-        
-        3. **WAIT FOR EVALUATOR FEEDBACK**
-        
-        STEP 2: CREATE/UPDATE SCRIPTS (Only when needed)
-        
-        Actions:
-        1. **EXAMINE INPUT FILES** (3-5 samples) to understand:
-           - HTML structure and image locations
-           - Types of images present (property photos, floor plans, etc.)
-           - Image URL patterns and formats
-        
-        2. **CREATE/UPDATE SCRIPTS**:
-        
-        A. **IMAGE EXTRACTION SCRIPT** (scripts/image_extractor.py):
-           - Parse ALL HTML files from ./input/ directory
-           - Extract ONLY property-related images:
-             * Property photos (exterior/interior views)
-             * Floor plans or blueprints
-             * Property maps or aerial views
-           - EXCLUDE non-property images:
-             * Website logos or icons
-             * Advertisement banners
-             * Navigation buttons
-             * Social media icons
-           - Detection strategies:
-             * Check img alt text for property-related keywords
-             * Check parent div classes/ids for property context
-             * Check image dimensions (property images are usually larger)
-             * Check src URL patterns (often contain 'property', 'listing', etc.)
-           - Save to: owners/property_images.json
-           - Format:
-           ```json
-           {{
-             "property_[id]": {{
-               "images": [
-                 {{
-                   "url": "https://...",
-                   "type": "exterior/interior/floorplan/aerial",
-                   "alt_text": "...",
-                   "context": "found in div with class..."
-                 }}
-               ]
-             }}
-           }}
-           ```
-        
-        B. **IMAGE DOWNLOAD SCRIPT** (scripts/image_downloader.py):
-           - Read owners/property_images.json
-           - Create images/ directory structure:
-             * images/property_[id]/exterior/
-             * images/property_[id]/interior/
-             * images/property_[id]/floorplan/
-             * images/property_[id]/aerial/
-           - Download images with:
-             * Proper error handling (404, timeouts, etc.)
-             * Retry logic with exponential backoff
-             * Progress logging
-             * File naming: property_[id]_[type]_[index].[ext]
-           - Handle various image formats (jpg, png, webp, etc.)
-           - Skip already downloaded images
-           - Create download summary: images/download_summary.json
-        
-        3. **TEST BOTH SCRIPTS** - run them and verify output
-        
-        🖼️ IMAGE DETECTION GUIDELINES:
-        Property images typically:
-        - Have larger dimensions (width > 300px)
-        - Contain keywords: property, house, home, listing, view, bedroom, kitchen, etc.
-        - Are in main content areas (not headers/footers)
-        - Have meaningful alt text
-        - Are not base64 encoded icons
-        
-        ⚠️ CRITICAL RULES:
-        - **CHECK EXISTING SCRIPTS FIRST** before creating new ones
-        - **RUN EXISTING SCRIPTS** before updating them
-        - Process ALL {self.state['input_files_count']} input files
-        - Be selective - only extract true property images
-        - Handle network errors gracefully
-        
-        🚀 START: **IMMEDIATELY** check for existing scripts, run them if they exist, then wait for evaluator feedback.
+        Process ALL {self.state['input_files_count']} files. Check existing scripts FIRST.
         """
         
         return create_react_agent(
             model=self.model,
             tools=self.tools,
             prompt=generator_prompt,
-            checkpointer=self.shared_checkpointer
+            checkpointer=InMemorySaver()  # Use independent memory to reduce context
         )
     
     async def _create_image_evaluator_agent(self):
         """Create Image Evaluator agent"""
         
         evaluator_prompt = f"""
-        You are the IMAGE EVALUATOR - validating image extraction and download quality.
+        You are the IMAGE EVALUATOR. Validate image extraction/download scripts.
         
-        🎯 YOUR TASK:
-        Validate that the image extraction and download scripts work correctly.
+        CHECK:
+        1. Scripts exist: image_extractor.py, image_downloader.py
+        2. property_images.json has valid image URLs (not icons/ads)
+        3. Images downloaded to correct folders
+        4. Error handling works
         
-        🔍 VALIDATION CHECKLIST:
+        ACCEPT if: Scripts work, images extracted correctly
+        REJECT if: Missing scripts, extracting UI elements, no error handling
         
-        1. **Image Extraction Script**:
-           - Does scripts/image_extractor.py exist?
-           - Does it parse HTML files correctly?
-           - Does it filter out non-property images?
-           - Is owners/property_images.json created with proper structure?
-           - Are image URLs valid and complete?
-        
-        2. **Image Download Script**:
-           - Does scripts/image_downloader.py exist?
-           - Does it create proper directory structure?
-           - Does it handle errors gracefully?
-           - Are images actually downloaded?
-           - Is download_summary.json created?
-        
-        3. **Quality Checks**:
-           - Sample 2-3 properties from property_images.json
-           - Verify URLs look like real property images (not icons/ads)
-           - Check if downloaded images exist in correct folders
-           - Verify error handling for failed downloads
-        
-        ✅ ACCEPT IF:
-        - Both scripts exist and run without critical errors
-        - Property images are correctly identified (not ads/icons)
-        - Images are downloaded to organized folders
-        - Error handling is implemented
-        
-        ❌ REJECT IF:
-        - Scripts are missing or have syntax errors
-        - Extracting website UI elements as property images
-        - No images extracted when HTML clearly contains them
-        - Download script fails without proper error handling
-        
-        RESPONSE: **STATUS: ACCEPTED** or **STATUS: REJECTED** with specific issues.
+        Reply: STATUS: ACCEPTED or STATUS: REJECTED [issues]
         """
         
         return create_react_agent(
             model=self.model,
             tools=self.tools,
             prompt=evaluator_prompt,
-            checkpointer=self.shared_checkpointer
+            checkpointer=InMemorySaver()  # Use independent memory to reduce context
         )
     
     async def _agent_speak(self, agent, agent_name: str, turn: int, user_instruction: str) -> str:
@@ -1873,6 +1764,11 @@ class ImageExtractionGeneratorEvaluatorPair:
         
         except Exception as e:
             logger.error(f"     ❌ {agent_name} error: {str(e)}")
+            # Handle rate limit errors specifically
+            if "rate_limit_exceeded" in str(e) or "429" in str(e):
+                logger.warning(f"     ⚠️ Rate limit hit for {agent_name}, waiting 60s...")
+                await asyncio.sleep(60)  # Wait 1 minute before retry
+                raise Exception(f"{agent_name} rate limit - restarting after delay")
             return f"{agent_name} error on turn {turn}: {str(e)}"
 
 
@@ -3322,9 +3218,17 @@ async def image_extraction_node(state: WorkflowState) -> WorkflowState:
         return state
     
     # Create the generator-evaluator pair
+    # Use a lighter model for image extraction if available to reduce token usage
+    image_model = state['model']
+    if os.getenv("IMAGE_MODEL_NAME"):
+        image_model = init_chat_model(
+            os.getenv("IMAGE_MODEL_NAME", "gpt-4o-mini"),
+            temperature=0
+        )
+    
     image_gen_eval_pair = ImageExtractionGeneratorEvaluatorPair(
         state=state,
-        model=state['model'],
+        model=image_model,
         tools=state['tools'],
         schemas=state['schemas']
     )
