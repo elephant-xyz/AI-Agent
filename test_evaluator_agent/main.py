@@ -1502,7 +1502,8 @@ class ExtractionGeneratorEvaluatorPair:
                     file_path = row['file_path']
                     # Extract just the property folder name from the path
                     # e.g., "submit/property_123/property.json" -> "property_123"
-                    parts = file_path.split('/')
+                    normalized_path = file_path.replace('\\', '/')
+                    parts = normalized_path.split('/')
                     if len(parts) >= 2:
                         property_folder = parts[-2]  # Get the folder name
                         error_files.add(property_folder)
@@ -1516,7 +1517,8 @@ class ExtractionGeneratorEvaluatorPair:
                 if 'File:' in line:
                     file_path = line.replace('File:', '').strip()
                     # Extract property folder from path
-                    parts = file_path.split('/')
+                    normalized_path = file_path.replace('\\', '/')
+                    parts = normalized_path.split('/')
                     if len(parts) >= 2:
                         property_folder = parts[-2]
                         error_files.add(property_folder)
@@ -2247,10 +2249,16 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
                 file_path = row['filePath']
                 property_cid = row['propertyCid']
 
-                old_folder_name = file_path.split('/')[-2]
-                if old_folder_name not in folder_mapping:
-                    folder_mapping[old_folder_name] = property_cid
-                    logger.info(f"   📋 Mapping: {old_folder_name} -> {property_cid}")
+                normalized_path = file_path.replace('\\', '/')
+                path_parts = normalized_path.split('/')
+
+                if len(path_parts) >= 2:
+                    old_folder_name = path_parts[-2]
+                    if old_folder_name not in folder_mapping:
+                        folder_mapping[old_folder_name] = property_cid
+                        logger.info(f"   📋 Mapping: {old_folder_name} -> {property_cid}")
+                else:
+                    logger.warning(f"   ⚠️ Invalid path format: {file_path}")
         else:
             logger.warning("⚠️ upload-results.csv not found, using original folder names")
 
@@ -2429,7 +2437,8 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
                         error_path = row['error_path']
 
                         # Extract field name from the error path (last part after the last '/')
-                        field_name = error_path.split('/')[-1]
+                        normalized_path = error_path.replace('\\', '/')
+                        field_name = normalized_path.split('/')[-1]
 
                         # Create formatted error with field name
                         if field_name.startswith('property_has_'):
