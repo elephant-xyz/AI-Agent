@@ -2157,6 +2157,15 @@ def fetch_schema_from_ipfs(cid):
     return None
 
 
+@backoff.on_exception(
+    backoff.expo,
+    (requests.exceptions.RequestException, ConnectionError, TimeoutError, json.JSONDecodeError),
+    max_tries=3,
+    max_time=120,  # 2 minutes total
+    on_backoff=lambda details: logger.warning(
+        f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
+    on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
+)
 def fetch_county_data_group_cid():
     """Fetch the county data group CID from the schema manifest API"""
     manifest_url = "https://lexicon.elephant.xyz/json-schemas/schema-manifest.json"
@@ -3137,6 +3146,12 @@ async def run_three_node_workflow():
         print_status(f"County CID retrieved: {county_data_group_cid}")
     except (ConnectionError, ValueError, RuntimeError) as e:
         error_msg = f"Failed to fetch County data group CID: {str(e)}"
+        logger.error(error_msg)
+        print_status(f"CRITICAL ERROR: {error_msg}")
+        raise SystemExit(f"Workflow failed: {error_msg}")
+
+    if not county_data_group_cid:
+        error_msg = "County data group CID is empty - exiting"
         logger.error(error_msg)
         print_status(f"CRITICAL ERROR: {error_msg}")
         raise SystemExit(f"Workflow failed: {error_msg}")
