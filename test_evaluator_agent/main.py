@@ -2111,27 +2111,31 @@ class ExtractionGeneratorEvaluatorPair:
 
 
 def cleanup_owners_directory():
-    """Clean up the owners directory at the start of workflow"""
-    owners_dir = os.path.join(BASE_DIR, "owners")
+    """Clean up the owners and data directories at the start of workflow"""
+    directories_to_cleanup = [
+        ("owners", os.path.join(BASE_DIR, "owners")),
+        ("data", os.path.join(BASE_DIR, "data"))
+    ]
 
-    if os.path.exists(owners_dir):
+    for dir_name, dir_path in directories_to_cleanup:
+        if os.path.exists(dir_path):
+            try:
+                shutil.rmtree(dir_path)
+                logger.info(f"🗑️ Cleaned up existing {dir_name} directory: {dir_path}")
+                print_status(f"Cleaned up existing {dir_name} directory")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not clean up {dir_name} directory: {e}")
+                print_status(f"Warning: Could not clean up {dir_name} directory: {e}")
+        else:
+            logger.info(f"📁 {dir_name.capitalize()} directory does not exist, no cleanup needed")
+
+        # Create fresh directory
         try:
-            shutil.rmtree(owners_dir)
-            logger.info(f"🗑️ Cleaned up existing owners directory: {owners_dir}")
-            print_status("Cleaned up existing owners directory")
+            os.makedirs(dir_path, exist_ok=True)
+            logger.info(f"📁 Created fresh {dir_name} directory: {dir_path}")
         except Exception as e:
-            logger.warning(f"⚠️ Could not clean up owners directory: {e}")
-            print_status(f"Warning: Could not clean up owners directory: {e}")
-    else:
-        logger.info("📁 Owners directory does not exist, no cleanup needed")
-
-    # Create fresh owners directory
-    try:
-        os.makedirs(owners_dir, exist_ok=True)
-        logger.info(f"📁 Created fresh owners directory: {owners_dir}")
-    except Exception as e:
-        logger.error(f"❌ Could not create owners directory: {e}")
-        raise
+            logger.error(f"❌ Could not create {dir_name} directory: {e}")
+            raise
 
 
 def fetch_schema_from_ipfs(cid):
