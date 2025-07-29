@@ -16,7 +16,7 @@ An AI-powered data extraction evaluator agent using LangGraph for property data 
 You can run this tool directly using `uvx`:
 
 ```bash
-uvx --from git+https://github.com/elephant-xyz/agentic_ai test-evaluator-agent
+uvx --from git+https://github.com/elephant-xyz/AI-Agent test-evaluator-agent
 ```
 
 ## Usage
@@ -51,6 +51,7 @@ The agent requires specific directory structure and environment variables:
 # Set environment variables
 export MODEL_NAME=gpt-4.1
 export TEMPERATURE=0
+export OPENAI_API_KEY=your_openai_api_key_here
 
 # Run the agent
 test-evaluator-agent
