@@ -24,7 +24,13 @@ from langchain_mcp_adapters.client import (
 from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
 
-load_dotenv()
+# Try to load .env from multiple locations
+for env_path in [".env", os.path.expanduser("~/.env")]:
+    if os.path.exists(env_path):
+        load_dotenv(dotenv_path=env_path)
+        break
+else:
+    load_dotenv()  # fallback to default behavior
 
 # logger = logging.getLogger(__name__)
 #
@@ -111,7 +117,6 @@ class WorkflowState(TypedDict):
     max_generation_restarts: int  # Limit restarts to prevent infinite loops
     agent_timeout_seconds: int  # Timeout for agent operations
     last_agent_activity: float
-    county_data_group_cid: str
 
 
 def update_agent_activity(state: WorkflowState):
@@ -1656,7 +1661,7 @@ class ExtractionGeneratorEvaluatorPair:
 
             # CLI VALIDATOR RUNS (non-LLM function)
             logger.info("⚡ CLI Validator running validation...")
-            cli_success, cli_errors, _ = run_cli_validator("data", self.state['county_data_group_cid'])
+            cli_success, cli_errors, _ = run_cli_validator("data")  # Note: 3 return values now
 
             print(f"🔍 CLI Validator errors: {cli_errors}")
             if cli_success:
@@ -2102,30 +2107,6 @@ class ExtractionGeneratorEvaluatorPair:
             return f"{agent_name} error on turn {turn}: {str(e)}"
 
 
-def cleanup_owners_directory():
-    """Clean up the owners directory at the start of workflow"""
-    owners_dir = os.path.join(BASE_DIR, "owners")
-
-    if os.path.exists(owners_dir):
-        try:
-            shutil.rmtree(owners_dir)
-            logger.info(f"🗑️ Cleaned up existing owners directory: {owners_dir}")
-            print_status("Cleaned up existing owners directory")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not clean up owners directory: {e}")
-            print_status(f"Warning: Could not clean up owners directory: {e}")
-    else:
-        logger.info("📁 Owners directory does not exist, no cleanup needed")
-
-    # Create fresh owners directory
-    try:
-        os.makedirs(owners_dir, exist_ok=True)
-        logger.info(f"📁 Created fresh owners directory: {owners_dir}")
-    except Exception as e:
-        logger.error(f"❌ Could not create owners directory: {e}")
-        raise
-
-
 def fetch_schema_from_ipfs(cid):
     """Fetch schema from IPFS using the provided CID."""
     gateways = [
@@ -2151,55 +2132,11 @@ def fetch_schema_from_ipfs(cid):
     return None
 
 
-def fetch_county_data_group_cid():
-    """Fetch the county data group CID from the schema manifest API"""
-    manifest_url = "https://lexicon.elephant.xyz/json-schemas/schema-manifest.json"
-
-    try:
-        logger.info(f"🔍 Fetching schema manifest from: {manifest_url}")
-        response = requests.get(manifest_url, timeout=30)
-        response.raise_for_status()
-
-        manifest_data = response.json()
-        logger.info("✅ Successfully fetched schema manifest")
-
-        # Extract County data group CID
-        if "County" in manifest_data:
-            county_cid = manifest_data["County"]["ipfsCid"]
-            logger.info(f"📋 Found County data group CID: {county_cid}")
-            return county_cid
-        else:
-            error_msg = "❌ County entry not found in schema manifest"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-    except requests.exceptions.RequestException as e:
-        error_msg = f"❌ Error fetching schema manifest: {e}"
-        logger.error(error_msg)
-        raise ConnectionError(error_msg)
-    except json.JSONDecodeError as e:
-        error_msg = f"❌ Error parsing schema manifest JSON: {e}"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    except Exception as e:
-        error_msg = f"❌ Unexpected error fetching schema manifest: {e}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-
-
-def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
+def run_cli_validator(data_dir: str = "data") -> tuple[bool, str, str]:
     """
     Run the CLI validation command and return results
     Returns: (success: bool, error_details: str, error_hash: str)
     """
-    if not county_data_group_cid:
-        error_msg = "County data group CID not provided to CLI validator"
-        logger.error(error_msg)
-        error_hash = hashlib.md5(error_msg.encode()).hexdigest()
-        return False, error_msg, error_hash
-
-    logger.info(f"🏛️ Using County CID: {county_data_group_cid}")
-
     try:
         logger.info("📁 Creating submit directory and copying data with proper naming...")
 
@@ -2232,10 +2169,22 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
                 file_path = row['filePath']
                 property_cid = row['propertyCid']
 
-                old_folder_name = file_path.split('/')[-2]
-                if old_folder_name not in folder_mapping:
-                    folder_mapping[old_folder_name] = property_cid
-                    logger.info(f"   📋 Mapping: {old_folder_name} -> {property_cid}")
+                path_parts = file_path.split('/')
+                output_index = -1
+
+                # Find the "output" directory in the path
+                for i, part in enumerate(path_parts):
+                    if part == "output":
+                        output_index = i
+                        break
+
+                if output_index != -1 and output_index + 1 < len(path_parts):
+                    old_folder_name = path_parts[output_index + 1]
+                    if old_folder_name not in folder_mapping:
+                        folder_mapping[old_folder_name] = property_cid
+                        logger.info(f"   📋 Mapping: {old_folder_name} -> {property_cid}")
+
+            logger.info(f"✅ Created mapping for {len(folder_mapping)} unique folders")
         else:
             logger.warning("⚠️ upload-results.csv not found, using original folder names")
 
@@ -2270,6 +2219,7 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
 
         # Copy data to submit directory with proper naming and build relationships
         copied_count = 0
+        county_data_group_cid = "bafkreigsqoofbrni7fye3dtsjuvtwv4nmmdzrppvblhzlsq3xpucn5daeq"
 
         # NEW: Collect all relationship building errors
         all_relationship_errors = []
@@ -3123,18 +3073,6 @@ def download_scripts_from_github():
 
 async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
-
-    logger.info("Fetching County data group CID from schema manifest...")
-    try:
-        county_data_group_cid = fetch_county_data_group_cid()
-        logger.info(f"✅ Successfully retrieved County CID: {county_data_group_cid}")
-        print_status(f"County CID retrieved: {county_data_group_cid}")
-    except (ConnectionError, ValueError, RuntimeError) as e:
-        error_msg = f"Failed to fetch County data group CID: {str(e)}"
-        logger.error(error_msg)
-        print_status(f"CRITICAL ERROR: {error_msg}")
-        raise SystemExit(f"Workflow failed: {error_msg}")
-
     # Load schemas from IPFS
     logger.info("Downloading scripts from GitHub repository...")
     if not download_scripts_from_github():
@@ -3146,8 +3084,6 @@ async def run_three_node_workflow():
     if not schemas or not stub_files:
         logger.error("Failed to load schemas from IPFS")
         return
-
-    cleanup_owners_directory()
 
     def discover_input_files():
         """Discover all processable files in input folder"""
@@ -3238,7 +3174,6 @@ async def run_three_node_workflow():
         max_generation_restarts=2,
         agent_timeout_seconds=300,  # 5 minutes timeout per agent operation
         last_agent_activity=0,
-        county_data_group_cid=county_data_group_cid,
     )
 
     # Create the workflow graph
