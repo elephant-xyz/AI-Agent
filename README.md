@@ -44,6 +44,7 @@ The agent requires specific directory structure and environment variables:
 ### Environment Variables
 - `MODEL_NAME`: AI model to use (default: gpt-4.1)
 - `TEMPERATURE`: Model temperature (default: 0)
+- `OPENAI_API_KEY`: Your API key for the OpenAI service.
 
 ### Running the Agent
 
@@ -56,6 +57,48 @@ export OPENAI_API_KEY=your_openai_api_key_here
 # Run the agent
 test-evaluator-agent
 ```
+
+### Running with Docker
+
+This method is recommended for a consistent and isolated environment. It packages the agent and all its dependencies into a container.
+
+1.  **Build the Docker Image**
+
+    First, download the `Dockerfile` from the repository and build the Docker image.
+
+    ```bash
+    # Download the Dockerfile
+    curl -O https://raw.githubusercontent.com/elephant-xyz/AI-Agent/main/Dockerfile
+
+    # Build the image
+    docker build -t test-evaluator-agent .
+    ```
+
+2.  **Prepare Environment Variables**
+
+    For better security and configuration management, create an environment file named `.env` in your project's root directory. This file will hold your API key and other settings.
+
+    ```bash
+    # Create and populate the .env file
+    cat > .env <<EOL
+    MODEL_NAME=gpt-4.1
+    TEMPERATURE=0
+    OPENAI_API_KEY=your_openai_api_key_here
+    EOL
+    ```
+
+3.  **Run the Docker Container**
+
+    Run the container, mounting your entire project directory into the container's `/data` workspace and passing the environment variables via the `.env` file.
+
+    ```bash
+    # Run the container
+    docker run --rm -it \
+      --env-file ./.env \
+      -v "$(pwd):/data" \
+      test-evaluator-agent
+    ```
+    This command maps your current directory (`$(pwd)`) on the host to the `/data` directory inside the container. This ensures the agent has access to all necessary input files (`input/`, `seed.csv`, etc.) and that all generated output (`submit/`, `scripts/`, etc.) is saved directly to your project folder.
 
 ## How It Works
 
