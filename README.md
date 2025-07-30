@@ -75,7 +75,7 @@ This package is designed to be run as a standalone tool with all dependencies ma
 
 ## Overview
 
-The seeding process is a multi-stage workflow that transforms property data into blockchain-verified assets through a structured approach involving  mining and minting steps.
+The seeding process transforms property data into blockchain-verified assets through a structured workflow. The Foundation team provides initial data on GitHub, and developers complete the seeding process by transforming, validating, storing, and minting using the Elephant CLI.
 
 ## Seed Group Architecture
 
@@ -106,132 +106,117 @@ The **Seed Group** serves as the foundational structure consisting of four essen
 - Identifies property location for mapping services
 - Compatible with services like Google Maps for location verification
 
-## Mining Process
+## Foundation Data Provision
 
-### Foundation Responsibilities
+### GitHub Data Repository
 
-**Mining** refers to the process of assembling a complete Seed Group:
+The Foundation team provides initial property data through GitHub repositories, organized by county:
 
-- **Data Collection**: Gathering property-related information from various sources
-- **Initial Processing**: Structuring raw data into the Seed Group format
-- **Verification**: Linking county-certified information
-- **Documentation**: Publishing certified county links on GitHub
-- **Quality Assurance**: Ensuring data accuracy before Oracle handoff
+**Example**: [Palm Beach County Data](https://github.com/elephant-xyz/AI-Agent/tree/main/counties/palm%20beach)
 
-### Mining Outputs
-- Structured Seed Group ready for Oracle processing
-- Verified county data links
-- GitHub-hosted certification documentation
+### Data Structure
+- County-organized folders containing property information
+- Certified county data links and references
+- Raw property data ready for transformation
+- Documentation and metadata for each property
 
-## Oracle Workflow
+## Seeding Workflow
 
-Oracles complete the seeding process by transforming the Foundation's work into blockchain-ready assets.
-
-### Oracle Responsibilities
-
-#### 1. Transform
-- Convert Seed Group to **Lexicon Schema** format
-- Ensure data structure compatibility
-- Validate transformation accuracy
-- Prepare data for decentralized storage
-
-#### 2. Store
-- Upload transformed Seed Group to **IPFS**
-- Ensure decentralized accessibility
-- Generate IPFS content hashes
-- Verify successful storage completion
-
-#### 3. Mint
-- Generate final **Merkle hash** from processed data
-- Submit hash to the smart contract
-- Complete the minting process
-- Finalize blockchain registration
-
-## Complete Workflow
+Developers complete the seeding process using the **[Elephant CLI](https://github.com/elephant-xyz/elephant-cli)** tool for all operations.
 
 ### Step-by-Step Process
 
 ```mermaid
 graph TD
-    A[Foundation Mining] --> B[Seed Group Assembly]
-    B --> C[County Data Verification]
-    C --> D[GitHub Documentation]
-    D --> E[Oracle Pickup]
-    E --> F[Lexicon Schema Transformation]
-    F --> G[IPFS Storage]
-    G --> H[Merkle Hash Generation]
-    H --> I[Contract Submission]
-    I --> J[Minting Complete]
+    A[Foundation GitHub Data] --> B[Transform to Lexicon Schema]
+    B --> C[Validate with Elephant CLI]
+    C --> D[Push to IPFS via CLI]
+    D --> E[Mint via CLI]
+    E --> F[Check Contract Consensus]
+    F --> G[Verify Token & vMahout Issuance]
+    G --> H[Complete Seed]
 ```
 
-#### Step 1: Foundation Mining
-- Foundation team mines and organizes the Seed Group
-- Collects property data from county systems
-- Structures data according to Seed Group specifications
-- Publishes certified links on GitHub
+#### Step 1: Access Foundation Data
+- Navigate to the appropriate county folder on GitHub
+- Example: [Palm Beach County](https://github.com/elephant-xyz/AI-Agent/tree/main/counties/palm%20beach)
+- Download or clone the repository data
+- Review property information and structure
 
-#### Step 2: Schema Transformation
-- Oracle retrieves Foundation's Seed Group
-- Transforms data into Lexicon Schema format
-- Validates transformation integrity
-- Prepares for decentralized storage
+#### Step 2: Transform to Lexicon Schema
+- Convert Foundation data to **[Lexicon Schema](https://lexicon.elephant.xyz/)** format
+- Ensure data structure compatibility with blockchain requirements
+- Follow schema specifications for proper formatting
+- Prepare data for validation step
 
-#### Step 3: IPFS Storage
-- Oracle uploads transformed Seed Group to IPFS
-- Ensures decentralized accessibility
-- Generates content addressing hashes
-- Verifies storage completion
+#### Step 3: Validate Using Elephant CLI
+- Install and configure **[Elephant CLI](https://github.com/elephant-xyz/elephant-cli)**
+- Run validation commands to verify data integrity
+- Ensure schema compliance and structure correctness
+- Fix any validation errors before proceeding
 
-#### Step 4: Contract Submission
-- Oracle generates final Merkle hash
-- Submits hash to smart contract
-- Completes minting process
-- Registers asset on blockchain
+#### Step 4: Push to IPFS
+- Use Elephant CLI to upload validated data to IPFS
+- Generate IPFS content hashes for decentralized storage
+- Verify successful storage and accessibility
+- Record IPFS hash for minting process
 
-## Technical Specifications
+#### Step 5: Mint the Seed
+- Execute minting command via Elephant CLI
+- Generate and submit Merkle hash to smart contract
+- Complete blockchain registration process
+- Initiate consensus verification process
 
-### Data Integrity
-- **Merkle Hashing**: Ensures data integrity throughout the process
-- **Contract Storage**: Immutable hash storage on blockchain
-- **IPFS Redundancy**: Decentralized storage for data availability
+#### Step 6: Verify Contract Consensus & Token Issuance
+- Check smart contract for consensus confirmation
+- Verify that consensus has been reached by network validators
+- Confirm token issuance has occurred
+- Verify vMahout token distribution
+- Validate final seed completion status
 
-### System Integration
-- **County Systems**: HTTP-based property data retrieval
-- **GitHub**: Certification documentation hosting
-- **IPFS**: Decentralized storage network
-- **Smart Contracts**: Blockchain asset registration
+## Technical Requirements
 
-### Quality Assurance
-- Foundation verification of county data
-- Oracle validation of transformations
-- Merkle hash integrity checking
-- Contract submission verification
+### Tools Required
+- **[Elephant CLI](https://github.com/elephant-xyz/elephant-cli)** - Primary tool for all seeding operations
+- **Git** - For accessing Foundation data repositories
 
-## Key Benefits
+### Data Sources
+- **Foundation GitHub**: [AI-Agent Repository](https://github.com/elephant-xyz/AI-Agent)
+- **County Data**: Organized by county folders (e.g., Palm Beach)
+- **[Lexicon Schema](https://lexicon.elephant.xyz/)**: Data structure specifications
 
-- **Decentralization**: IPFS storage eliminates single points of failure
-- **Integrity**: Merkle hashing ensures data hasn't been tampered with
-- **Transparency**: GitHub documentation provides audit trail
-- **Automation**: Oracle processing reduces manual intervention
-- **Verification**: County-certified data ensures accuracy
+## Development Guidelines
 
-## Development Considerations
+### For Developers
+- Always start with Foundation's GitHub data
+- Follow [Lexicon Schema](https://lexicon.elephant.xyz/) specifications exactly
+- Use Elephant CLI for all operations (validate, IPFS, mint)
+- Verify each step before proceeding to the next
+- Maintain audit trail of all operations
 
-### For Foundation Team
-- Ensure complete Seed Group assembly before Oracle handoff
-- Maintain accurate GitHub documentation
-- Verify county data links are accessible
-- Follow established mining protocols
+### Best Practices
+- Backup original Foundation data before transformation
+- Validate data at each transformation step
+- Test IPFS accessibility before minting
+- Verify smart contract interaction success
+- Document any custom transformations applied
 
-### For Oracle Developers
-- Implement robust Lexicon Schema transformation
-- Handle IPFS storage failures gracefully
-- Validate Merkle hash generation
-- Ensure proper contract interaction
+## Resources
 
-### For Smart Contract Integration
-- Verify hash submission protocols
-- Implement proper access controls
-- Handle minting completion events
-- Maintain contract upgrade paths
+- **Foundation Data**: [AI-Agent Counties](https://github.com/elephant-xyz/AI-Agent/tree/main/counties)
+- **Elephant CLI**: [GitHub Repository](https://github.com/elephant-xyz/elephant-cli)
+- **Lexicon Schema**: [Documentation](https://lexicon.elephant.xyz/)
+- **Example County**: [Palm Beach Data](https://github.com/elephant-xyz/AI-Agent/tree/main/counties/palm%20beach)
 
+## Troubleshooting
+
+### Common Issues
+- **Schema Validation Errors**: Review [Lexicon Schema](https://lexicon.elephant.xyz/) requirements
+- **Consensus Delays**: Allow time for network validators to reach consensus
+- **Token Issuance Issues**: Verify contract execution and transaction confirmation
+- **vMahout Distribution Problems**: Check contract state and validator responses
+
+### Support
+- **Lexicon Schema**: [Documentation](https://lexicon.elephant.xyz/)
+- **Foundation Data**: [AI-Agent Repository](https://github.com/elephant-xyz/AI-Agent)
+- **Elephant CLI**: [GitHub Repository](https://github.com/elephant-xyz/elephant-cli)
