@@ -70,3 +70,168 @@ test-evaluator-agent
 This package is designed to be run as a standalone tool with all dependencies managed automatically.
 
 ## NOTE: in case of running the generated scripts by AI agent directly without using the AI agent, you need to run prepare_to_submit.py script to build relationships and have data ready for submission
+
+# Seeding Process
+
+## Overview
+
+The seeding process is a multi-stage workflow that transforms property data into blockchain-verified assets through a structured approach involving  mining and minting steps.
+
+## Seed Group Architecture
+
+### Core Components
+
+The **Seed Group** serves as the foundational structure consisting of four essential classes:
+
+#### 1. Group Object
+- Acts as the root of the Merkle document
+- Provides the top-level container for all related data
+- Gets hashed and referenced in the smart contract
+- Forms the Merkle root for data integrity verification
+
+#### 2. Relationship
+- Defines connections and links between objects
+- Establishes data relationships within the Seed Group
+- Enables proper data association and referencing
+
+#### 3. Property Seed
+- Contains information needed to retrieve property details
+- Interfaces with county systems via HTTP requests
+- Uses parcel ID for property identification
+- Enables access to official county records
+
+#### 4. Unnormalized Address
+- Raw address input as provided by data sources
+- May not be normalized or geocoded initially
+- Identifies property location for mapping services
+- Compatible with services like Google Maps for location verification
+
+## Mining Process
+
+### Foundation Responsibilities
+
+**Mining** refers to the process of assembling a complete Seed Group:
+
+- **Data Collection**: Gathering property-related information from various sources
+- **Initial Processing**: Structuring raw data into the Seed Group format
+- **Verification**: Linking county-certified information
+- **Documentation**: Publishing certified county links on GitHub
+- **Quality Assurance**: Ensuring data accuracy before Oracle handoff
+
+### Mining Outputs
+- Structured Seed Group ready for Oracle processing
+- Verified county data links
+- GitHub-hosted certification documentation
+
+## Oracle Workflow
+
+Oracles complete the seeding process by transforming the Foundation's work into blockchain-ready assets.
+
+### Oracle Responsibilities
+
+#### 1. Transform
+- Convert Seed Group to **Lexicon Schema** format
+- Ensure data structure compatibility
+- Validate transformation accuracy
+- Prepare data for decentralized storage
+
+#### 2. Store
+- Upload transformed Seed Group to **IPFS**
+- Ensure decentralized accessibility
+- Generate IPFS content hashes
+- Verify successful storage completion
+
+#### 3. Mint
+- Generate final **Merkle hash** from processed data
+- Submit hash to the smart contract
+- Complete the minting process
+- Finalize blockchain registration
+
+## Complete Workflow
+
+### Step-by-Step Process
+
+```mermaid
+graph TD
+    A[Foundation Mining] --> B[Seed Group Assembly]
+    B --> C[County Data Verification]
+    C --> D[GitHub Documentation]
+    D --> E[Oracle Pickup]
+    E --> F[Lexicon Schema Transformation]
+    F --> G[IPFS Storage]
+    G --> H[Merkle Hash Generation]
+    H --> I[Contract Submission]
+    I --> J[Minting Complete]
+```
+
+#### Step 1: Foundation Mining
+- Foundation team mines and organizes the Seed Group
+- Collects property data from county systems
+- Structures data according to Seed Group specifications
+- Publishes certified links on GitHub
+
+#### Step 2: Schema Transformation
+- Oracle retrieves Foundation's Seed Group
+- Transforms data into Lexicon Schema format
+- Validates transformation integrity
+- Prepares for decentralized storage
+
+#### Step 3: IPFS Storage
+- Oracle uploads transformed Seed Group to IPFS
+- Ensures decentralized accessibility
+- Generates content addressing hashes
+- Verifies storage completion
+
+#### Step 4: Contract Submission
+- Oracle generates final Merkle hash
+- Submits hash to smart contract
+- Completes minting process
+- Registers asset on blockchain
+
+## Technical Specifications
+
+### Data Integrity
+- **Merkle Hashing**: Ensures data integrity throughout the process
+- **Contract Storage**: Immutable hash storage on blockchain
+- **IPFS Redundancy**: Decentralized storage for data availability
+
+### System Integration
+- **County Systems**: HTTP-based property data retrieval
+- **GitHub**: Certification documentation hosting
+- **IPFS**: Decentralized storage network
+- **Smart Contracts**: Blockchain asset registration
+
+### Quality Assurance
+- Foundation verification of county data
+- Oracle validation of transformations
+- Merkle hash integrity checking
+- Contract submission verification
+
+## Key Benefits
+
+- **Decentralization**: IPFS storage eliminates single points of failure
+- **Integrity**: Merkle hashing ensures data hasn't been tampered with
+- **Transparency**: GitHub documentation provides audit trail
+- **Automation**: Oracle processing reduces manual intervention
+- **Verification**: County-certified data ensures accuracy
+
+## Development Considerations
+
+### For Foundation Team
+- Ensure complete Seed Group assembly before Oracle handoff
+- Maintain accurate GitHub documentation
+- Verify county data links are accessible
+- Follow established mining protocols
+
+### For Oracle Developers
+- Implement robust Lexicon Schema transformation
+- Handle IPFS storage failures gracefully
+- Validate Merkle hash generation
+- Ensure proper contract interaction
+
+### For Smart Contract Integration
+- Verify hash submission protocols
+- Implement proper access controls
+- Handle minting completion events
+- Maintain contract upgrade paths
+
