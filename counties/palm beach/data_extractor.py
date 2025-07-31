@@ -292,13 +292,17 @@ for input_file in input_files:
         def safe_val(val):
             try:
                 if val is None:
-                    return None
+                    return 0.01
                 v = float(val)
+                v = round(v, 2)
+                if v < 0:
+                    return 0.01
+                # Ensure at least 0.01 for positive, nonzero
                 if v == 0:
-                    return None
-                return round(v, 2)
+                    return 0.01
+                return v
             except Exception:
-                return None
+                return 0.01
         tax_json = {
             "source_http_request": address.get("source_http_request", {}),
             "request_identifier": f"{parcel_id}_tax_{year}",
@@ -308,7 +312,7 @@ for input_file in input_files:
             "property_building_amount": safe_val(building.get(year)),
             "property_land_amount": safe_val(land.get(year)),
             "property_taxable_value_amount": safe_val(taxable.get(year)),
-            "monthly_tax_amount": monthly_tax.get(year),
+            "monthly_tax_amount": monthly_tax.get(year) if monthly_tax.get(year) is not None else 0.0,
             "period_end_date": None,
             "period_start_date": None
         }
@@ -406,11 +410,13 @@ for input_file in input_files:
         if f.startswith("layout_") and f.endswith(".json"):
             os.remove(os.path.join(property_dir, f))
     layout_idx = 1
-    for i in range(bedroom_count):
-        layout = {
-            "source_http_request": address.get("source_http_request", {}),
-            "request_identifier": f"{parcel_id}_layout_bedroom_{i+1}",
-            "space_type": "Bedroom",
+    # Only create bedroom layouts if bedroom_count > 0
+    if bedroom_count > 0:
+        for i in range(bedroom_count):
+            layout = {
+                "source_http_request": address.get("source_http_request", {}),
+                "request_identifier": f"{parcel_id}_layout_bedroom_{i+1}",
+                "space_type": "Bedroom",
             "flooring_material_type": None,
             "size_square_feet": None,
             "floor_level": None,
