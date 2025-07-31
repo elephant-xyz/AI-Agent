@@ -77,9 +77,9 @@ def main():
         parcel_id = fname.replace('.html', '')
         if parcel_id not in seed:
             continue
-        address_str = seed[parcel_id]['Address']
+        # There is no 'Address' field in seed.csv, so we must extract address from the HTML or possible_addresses
+        # Use possible_addresses candidate for address fields
         county = seed[parcel_id]['County']
-        parsed = parse_address(address_str)
         # Load possible addresses
         pa_path = os.path.join(POSSIBLE_ADDRESSES_DIR, f'{parcel_id}.json')
         if not os.path.exists(pa_path):
@@ -93,35 +93,17 @@ def main():
             result[f'property_{parcel_id}'] = pa_data[f'property_{parcel_id}']
             continue
         candidates = pa_data if isinstance(pa_data, list) else []
-        # Try exact match first
-        match = None
-        for cand in candidates:
-            if (str(cand['number']) == parsed['number'] and
-                cand['street'].replace('.', '').replace(',', '').replace('  ', ' ').strip().lower() == parsed['street'].replace('.', '').replace(',', '').replace('  ', ' ').strip().lower() and
-                (not parsed['unit'] or (cand['unit'] or '').lower() == (parsed['unit'] or '').lower())):
-                match = cand
-                break
-        # Fuzzy match if needed
-        if not match:
-            best_score = 0
-            for cand in candidates:
-                score = fuzzy_match(f"{cand['number']} {cand['street']} {(cand['unit'] or '')}",
-                                   f"{parsed['number']} {parsed['street']} {(parsed['unit'] or '')}")
-                if score > best_score and score > 0.85:
-                    best_score = score
-                    match = cand
-        if not match and candidates:
-            match = candidates[0]  # fallback: pick first candidate if only one
+        # Use the first candidate as the match (since we have no address string to match)
+        match = candidates[0] if candidates else None
         if not match:
             print(f'No match found for {parcel_id}')
             continue  # skip if no match
-        # Build address object (fix: use candidate for street fields, clean up street_name)
+        # Build address object (use candidate for all address fields)
         # Extract directional and suffix from candidate street
-        street_parts = cand['street'].split()
+        street_parts = match['street'].split()
         pre_dir = None
         post_dir = None
         suffix = None
-        street_name_parts = []
         # Directional abbreviations
         dirs = {'N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'}
         suffixes = {'Rds','Blvd','Lk','Pike','Ky','Vw','Curv','Psge','Ldg','Mt','Un','Mdw','Via','Cor','Kys','Vl','Pr','Cv','Isle','Lgt','Hbr','Btm','Hl','Mews','Hls','Pnes','Lgts','Strm','Hwy','Trwy','Skwy','Is','Est','Vws','Ave','Exts','Cvs','Row','Rte','Fall','Gtwy','Wls','Clb','Frk','Cpe','Fwy','Knls','Rdg','Jct','Rst','Spgs','Cir','Crst','Expy','Smt','Trfy','Cors','Land','Uns','Jcts','Ways','Trl','Way','Trlr','Aly','Spg','Pkwy','Cmn','Dr','Grns','Oval','Cirs','Pt','Shls','Vly','Hts','Clf','Flt','Mall','Frds','Cyn','Lndg','Mdws','Rd','Xrds','Ter','Prt','Radl','Grvs','Rdgs','Inlt','Trak','Byu','Vlgs','Ctr','Ml','Cts','Arc','Bnd','Riv','Flds','Mtwy','Msn','Shrs','Rue','Crse','Cres','Anx','Drs','Sts','Holw','Vlg','Prts','Sta','Fld','Xrd','Wall','Tpke','Ft','Bg','Knl','Plz','St','Cswy','Bgs','Rnch','Frks','Ln','Mtn','Ctrs','Orch','Iss','Brks','Br','Fls','Trce','Park','Gdns','Rpds','Shl','Lf','Rpd','Lcks','Gln','Pl','Path','Vis','Lks','Run','Frg','Brg','Sqs','Xing','Pln','Glns','Blfs','Plns','Dl','Clfs','Ext','Pass','Gdn','Brk','Grn','Mnr','Cp','Pne','Spur','Opas','Upas','Tunl','Sq','Lck','Ests','Shr','Dm','Mls','Wl','Mnrs','Stra','Frgs','Frst','Flts','Ct','Mtns','Frd','Nck','Ramp','Vlys','Pts','Bch','Loop','Byp','Cmns','Fry','Walk','Hbrs','Dv','Hvn','Blf','Grv','Crk'}
@@ -139,11 +121,6 @@ def main():
             street_parts = street_parts[:-1]
         # The rest is street name
         street_name = ' '.join(street_parts).upper()
-        # Remove any unit or city name from street_name
-        if cand['unit'] and street_name.endswith(cand['unit'].upper()):
-            street_name = street_name[:-(len(cand['unit'])+1)].strip()
-        if cand['city'] and street_name.endswith(cand['city'].upper()):
-            street_name = street_name[:-(len(cand['city'])+1)].strip()
         address_obj = {
             'source_http_request': {
                 'method': seed[parcel_id]['method'],
@@ -151,20 +128,20 @@ def main():
                 'multiValueQueryString': json.loads(seed[parcel_id]['multiValueQueryString']) if seed[parcel_id]['multiValueQueryString'] else {},
             },
             'request_identifier': parcel_id,
-            'city_name': (cand['city'] or '').upper(),
+            'city_name': (match['city'] or '').upper(),
             'country_code': 'US',
             'county_name': county,
-            'latitude': cand['coordinates'][1],
-            'longitude': cand['coordinates'][0],
+            'latitude': match.get('lang') or match.get('latitude') or 0.0,
+            'longitude': match.get('long') or match.get('longitude') or 0.0,
             'plus_four_postal_code': None,  # Not available
-            'postal_code': cand['postcode'],
-            'state_code': 'FL',  # Assume FL for now
+            'postal_code': match['postcode'],
+            'state_code': match.get('region', 'FL'),
             'street_name': street_name,
             'street_post_directional_text': post_dir,
             'street_pre_directional_text': pre_dir,
-            'street_number': cand['number'],
+            'street_number': match['number'],
             'street_suffix_type': suffix,
-            'unit_identifier': cand['unit'] if cand['unit'] else None,
+            'unit_identifier': match['unit'] if match['unit'] else None,
             'township': None,
             'range': None,
             'section': None,
