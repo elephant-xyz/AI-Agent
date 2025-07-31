@@ -292,23 +292,33 @@ for input_file in input_files:
         def safe_val(val):
             try:
                 if val is None:
-                    return None
+                    return 0.0
                 v = float(val)
-                if v == 0:
-                    return None
                 return round(v, 2)
             except Exception:
-                return None
+                return 0.0
+        # property_taxable_value_amount must be number (not null)
+        assessed_val = safe_val(assessed.get(year))
+        market_val = safe_val(market.get(year))
+        building_val = safe_val(building.get(year))
+        land_val = safe_val(land.get(year))
+        taxable_val = safe_val(taxable.get(year))
+        # property_taxable_value_amount must be a positive number with at most 2 decimal places
+        if taxable_val is None or taxable_val < 0.01:
+            taxable_val = 0.01
+        monthly_val = monthly_tax.get(year)
+        if monthly_val is None:
+            monthly_val = 0.0
         tax_json = {
             "source_http_request": address.get("source_http_request", {}),
             "request_identifier": f"{parcel_id}_tax_{year}",
             "tax_year": clean_int(year),
-            "property_assessed_value_amount": safe_val(assessed.get(year)),
-            "property_market_value_amount": safe_val(market.get(year)),
-            "property_building_amount": safe_val(building.get(year)),
-            "property_land_amount": safe_val(land.get(year)),
-            "property_taxable_value_amount": safe_val(taxable.get(year)),
-            "monthly_tax_amount": monthly_tax.get(year),
+            "property_assessed_value_amount": assessed_val,
+            "property_market_value_amount": market_val,
+            "property_building_amount": building_val,
+            "property_land_amount": land_val,
+            "property_taxable_value_amount": taxable_val,
+            "monthly_tax_amount": monthly_val,
             "period_end_date": None,
             "period_start_date": None
         }

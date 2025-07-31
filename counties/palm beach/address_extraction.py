@@ -77,8 +77,27 @@ def main():
         parcel_id = fname.replace('.html', '')
         if parcel_id not in seed:
             continue
-        address_str = seed[parcel_id]['Address']
-        county = seed[parcel_id]['County']
+        # There is no 'Address' field in seed.csv, so we must get the address from possible_addresses or input HTML if needed
+        # Use possible_addresses as the address source
+        county = seed[parcel_id]['County'] if 'County' in seed[parcel_id] else seed[parcel_id]['county'] if 'county' in seed[parcel_id] else None
+        address_str = None
+        # Try to get address from possible_addresses file if available
+        pa_path = os.path.join(POSSIBLE_ADDRESSES_DIR, f'{parcel_id}.json')
+        if os.path.exists(pa_path):
+            with open(pa_path, 'r') as f:
+                pa_data = json.load(f)
+            if isinstance(pa_data, list) and len(pa_data) > 0:
+                # Use the first candidate's street/number/unit as the address string
+                cand = pa_data[0]
+                address_str = f"{cand['number']} {cand['street']}" + (f" {cand['unit']}" if cand.get('unit') else '')
+            elif isinstance(pa_data, dict) and f'property_{parcel_id}' in pa_data:
+                # Already mapped, skip to next
+                result[f'property_{parcel_id}'] = pa_data[f'property_{parcel_id}']
+                continue
+        if not address_str:
+            # fallback: use parcel_id as address string (will not match, but avoids crash)
+            address_str = parcel_id
+
         parsed = parse_address(address_str)
         # Load possible addresses
         pa_path = os.path.join(POSSIBLE_ADDRESSES_DIR, f'{parcel_id}.json')
@@ -154,8 +173,8 @@ def main():
             'city_name': (cand['city'] or '').upper(),
             'country_code': 'US',
             'county_name': county,
-            'latitude': cand['coordinates'][1],
-            'longitude': cand['coordinates'][0],
+            'latitude': cand['lang'] if 'lang' in cand and cand['lang'] is not None else 0.0,
+            'longitude': cand['long'] if 'long' in cand and cand['long'] is not None else 0.0,
             'plus_four_postal_code': None,  # Not available
             'postal_code': cand['postcode'],
             'state_code': 'FL',  # Assume FL for now
