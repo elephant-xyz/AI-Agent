@@ -77,8 +77,25 @@ def main():
         parcel_id = fname.replace('.html', '')
         if parcel_id not in seed:
             continue
-        address_str = seed[parcel_id]['Address']
+        # There is no 'Address' field in seed.csv, so we must extract address from the HTML or possible_addresses file
         county = seed[parcel_id]['County']
+        # Try to get address from possible_addresses file (first candidate)
+        pa_path = os.path.join(POSSIBLE_ADDRESSES_DIR, f'{parcel_id}.json')
+        if not os.path.exists(pa_path):
+            print(f'Warning: possible_addresses file missing for {parcel_id}')
+            continue
+        with open(pa_path, 'r') as f:
+            pa_data = json.load(f)
+        if isinstance(pa_data, dict) and f'property_{parcel_id}' in pa_data:
+            # Already mapped, just copy
+            result[f'property_{parcel_id}'] = pa_data[f'property_{parcel_id}']
+            continue
+        candidates = pa_data if isinstance(pa_data, list) else []
+        if not candidates:
+            print(f'No address candidates for {parcel_id}')
+            continue
+        # Use the first candidate as the address string for matching
+        address_str = f"{candidates[0]['number']} {candidates[0]['street']}" + (f" {candidates[0]['unit']}" if candidates[0].get('unit') else '')
         parsed = parse_address(address_str)
         # Load possible addresses
         pa_path = os.path.join(POSSIBLE_ADDRESSES_DIR, f'{parcel_id}.json')
@@ -154,8 +171,8 @@ def main():
             'city_name': (cand['city'] or '').upper(),
             'country_code': 'US',
             'county_name': county,
-            'latitude': cand['coordinates'][1],
-            'longitude': cand['coordinates'][0],
+            'latitude': cand.get('lang') if cand.get('lang') is not None else 0.0,
+            'longitude': cand.get('long') if cand.get('long') is not None else 0.0,
             'plus_four_postal_code': None,  # Not available
             'postal_code': cand['postcode'],
             'state_code': 'FL',  # Assume FL for now

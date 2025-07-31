@@ -289,16 +289,17 @@ for input_file in input_files:
             yint = int(year)
         except Exception:
             continue
-        def safe_val(val):
+        def safe_val(val, positive_only=False):
             try:
                 if val is None:
-                    return None
+                    return 0.01 if positive_only else 0.0
                 v = float(val)
-                if v == 0:
-                    return None
+                if positive_only and v <= 0:
+                    return 0.01
                 return round(v, 2)
             except Exception:
-                return None
+                return 0.01 if positive_only else 0.0
+        # property_taxable_value_amount must be a positive number with at most 2 decimal places
         tax_json = {
             "source_http_request": address.get("source_http_request", {}),
             "request_identifier": f"{parcel_id}_tax_{year}",
@@ -307,13 +308,14 @@ for input_file in input_files:
             "property_market_value_amount": safe_val(market.get(year)),
             "property_building_amount": safe_val(building.get(year)),
             "property_land_amount": safe_val(land.get(year)),
-            "property_taxable_value_amount": safe_val(taxable.get(year)),
-            "monthly_tax_amount": monthly_tax.get(year),
+            "property_taxable_value_amount": safe_val(taxable.get(year), positive_only=True),
+            "monthly_tax_amount": monthly_tax.get(year) if monthly_tax.get(year) is not None else 0.0,
             "period_end_date": None,
             "period_start_date": None
         }
         with open(os.path.join(property_dir, f"tax_{year}.json"), "w") as f:
             json.dump(tax_json, f, indent=2)
+
     # --- OWNERS (PERSON/COMPANY) ---
     if parcel_id in owners_schema:
         owners_by_date = owners_schema[parcel_id]["owners_by_date"]
