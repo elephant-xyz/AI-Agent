@@ -98,7 +98,6 @@ class WorkflowState(TypedDict):
     schemas: Dict[str, Any]
     stub_files: Dict[str, Any]
     extraction_complete: bool
-    address_matching_complete: bool
     owner_analysis_complete: bool
     structure_extraction_complete: bool
     validation_errors: List[str]
@@ -109,7 +108,6 @@ class WorkflowState(TypedDict):
     retry_count: int
     max_retries: int
     all_files_processed: bool
-    all_addresses_matched: bool
     error_history: List[str]  # Track recent errors
     consecutive_same_errors: int  # Count of same errors in a row
     last_error_hash: str  # Hash of last error for comparison
@@ -441,558 +439,6 @@ Execute your scripts and verify the files contain real owner data before finishi
         except asyncio.TimeoutError:
             logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT")
             raise Exception(f"{agent_name} timed out - restarting")
-        except Exception as e:
-            logger.error(f"     ❌ {agent_name} error: {str(e)}")
-            return f"{agent_name} error on turn {turn}: {str(e)}"
-
-
-class AddressMatchingGeneratorEvaluatorPair:
-    """Generator and Evaluator for address matching node with validation"""
-
-    def __init__(self, state: WorkflowState, model, tools, schemas: Dict[str, Any]):
-        self.state = state
-        self.model = model
-        self.tools = tools
-        self.schemas = schemas
-        self.max_conversation_turns = 15  # Fewer turns than extraction
-        self.shared_checkpointer = InMemorySaver()  # Shared between all agents
-        self.shared_thread_id = "address-matching-conversation-1"  # Same thread for all
-        self.consecutive_script_failures = 0
-        self.max_script_failures = 3
-
-    async def _restart_generation_process(self) -> WorkflowState:
-        """Restart the generation process with a fresh thread"""
-        logger.info("🔄 RESTARTING ADDRESS MATCHING PROCESS - Creating new thread and agents")
-
-        self.state['last_agent_activity'] = 0
-        self.state['generation_restart_count'] += 1
-
-        # Create new thread ID for fresh start
-        self.shared_thread_id = f"address-matching-conversation-restart-{self.state['generation_restart_count']}"
-        self.shared_checkpointer = InMemorySaver()
-
-        # Reset conversation state
-        self.max_conversation_turns = 15
-
-        logger.info(f"🆕 Starting fresh address matching attempt #{self.state['generation_restart_count']}")
-        logger.info(f"🆕 New thread ID: {self.shared_thread_id}")
-
-        return await self.run_feedback_loop()
-
-    async def run_feedback_loop(self) -> WorkflowState:
-        """Run Address Matching Generator + Evaluator CONVERSATION (No CLI validation)"""
-
-        logger.info("🔄 Starting Address Matching Generator + Evaluator CONVERSATION")
-        logger.info(f"💬 Using shared thread: {self.shared_thread_id}")
-        logger.info(f"🎭 Two agents: Generator, Evaluator")
-
-        # Create agents
-        generator_agent = await self._create_address_generator_agent()
-        evaluator_agent = await self._create_address_evaluator_agent()
-
-        conversation_turn = 0
-        evaluator_accepted = False
-
-        # GENERATOR STARTS: Create initial script
-        logger.info("🤖 Address Generator starts the conversation...")
-        try:
-            await self._agent_speak(
-                agent=generator_agent,
-                agent_name="ADDRESS_GENERATOR",
-                turn=1,
-                user_instruction="Start by creating the address matching script and processing all input files"
-            )
-        except Exception as e:
-            if "timed out" in str(e):
-                logger.warning("⏰ Agent timeout during initial ADDRESS_GENERATOR - restarting")
-                return await self._restart_generation_process()
-            raise
-
-        # Continue conversation until evaluator accepts or max turns
-        while conversation_turn < self.max_conversation_turns:
-            conversation_turn += 1
-
-            if hasattr(self, 'force_restart_now') and self.force_restart_now:
-                logger.warning("🔄 Address matching script failure restart triggered - restarting now")
-                self.force_restart_now = False
-                return await self._restart_generation_process()
-
-            if should_restart_due_to_timeout(self.state):
-                logger.warning("⏰ Agent timeout detected - restarting address matching process")
-                return await self._restart_generation_process()
-
-            logger.info(f"💬 Address Matching Turn {conversation_turn}/{self.max_conversation_turns}")
-
-            # EVALUATOR RESPONDS
-            logger.info("📊 Address Evaluator reviews Generator's work...")
-            try:
-                evaluator_message = await self._agent_speak(
-                    agent=evaluator_agent,
-                    agent_name="ADDRESS_EVALUATOR",
-                    turn=conversation_turn,
-                    user_instruction="""
-                     Review and evaluate the Address Generator's matching work and validate address completeness by comparing with sample input files.
-                     Check if addresses_mapping.json is properly created with correct address components.
-                     """,
-                )
-                # Add debug logging here:
-                logger.info(f"🔍 DEBUG: Full evaluator response:")
-                logger.info(f"📝 {evaluator_message}")
-
-            except Exception as e:
-                if "timed out" in str(e):
-                    logger.warning("⏰ Agent timeout during ADDRESS_EVALUATOR - restarting")
-                    return await self._restart_generation_process()
-                raise
-
-            evaluator_accepted = "STATUS: ACCEPTED" in evaluator_message
-            logger.info(f"📊 Address Evaluator decision: {'ACCEPTED' if evaluator_accepted else 'NEEDS FIXES'}")
-
-            # Check if evaluator accepted
-            if evaluator_accepted:
-                logger.info("✅ Address matching conversation completed successfully - Evaluator approved!")
-                self.state['address_matching_complete'] = True
-                self.state['all_addresses_matched'] = True
-                break
-
-            # GENERATOR RESPONDS: Sees feedback from evaluator and fixes issues
-            logger.info("🤖 Address Generator responds to evaluator's feedback...")
-
-            await self._agent_speak(
-                agent=generator_agent,
-                agent_name="ADDRESS_GENERATOR",
-                turn=conversation_turn + 1,
-                user_instruction=f"""IMMEDIATE ACTION REQUIRED,
-                SILENTLY Fix the address matching issues found by the evaluator immediately. Work silently, Don't reply to them, just use your tools to update the address_extraction.py script to Fix these specific issues:\n\n{evaluator_message}
-
-                DONOT REPLY FIX SILENTLY,
-
-                YOU MUST:
-                    1. Use the filesystem tools to read/modify the address extraction script
-                    2.look at the ./schema/address.json schema and ./input directory to understand the address structure before fixing script
-                    2. You MUST understand all the root causes of the errors to update address_extraction.py script to fix the address matching errors
-                    3. Fix ALL the specific errors mentioned above
-                    4. Test your changes by running the script and make sure you eliminated these errors
-                    5. MAKE sure you have eliminated the errors before Quitting
-
-                DO NOT just acknowledge - TAKE ACTION NOW with tools to fix these issues.""")
-
-            logger.info(f"🔄 Address matching turn {conversation_turn} complete, continuing conversation...")
-
-        # Conversation ended
-        final_status = "ACCEPTED" if evaluator_accepted else "PARTIAL"
-
-        if final_status != "ACCEPTED":
-            logger.warning(
-                f"⚠️ Address matching conversation ended without full success after {self.max_conversation_turns} turns")
-            logger.warning(f"Evaluator: {'✅' if evaluator_accepted else '❌'}")
-            self.state['all_addresses_matched'] = False
-
-        logger.info(f"💬 Address matching conversation completed with status: {final_status}")
-        return self.state
-
-    async def _create_address_generator_agent(self):
-        """Create Address Generator agent"""
-        # UPDATED ADDRESS MATCHING GENERATOR PROMPT
-        generator_prompt = f"""
-        You are an address matching specialist handling address data processing and matching.
-
-        🔄 CURRENT STATUS:
-            🔁 Attempt: {self.state['retry_count'] + 1} of {self.state['max_retries']}
-
-        🎯 YOUR MISSION: Process ALL properties in ./input/ by matching addresses using scripts/address_extraction.py.
-
-        🔄 MANDATORY SCRIPT-FIRST WORKFLOW:
-
-        STEP 1: CHECK FOR EXISTING SCRIPT AND RUN IT
-        1. **IMMEDIATELY** check if scripts/address_extraction.py already exists using read_file tool
-        2. If the file EXISTS:
-           - **RUN THE EXISTING SCRIPT** using execute_code_file tool
-           - **CHECK OUTPUT** - read owners/addresses_mapping.json if it was created
-           - **WAIT FOR EVALUATOR FEEDBACK** - the evaluator will validate your output
-        3. If the file DOES NOT EXIST → go to STEP 2 to CREATE the script
-
-        STEP 2: CREATE/UPDATE SCRIPT (Only when needed)
-        **EXECUTE THIS ONLY IF:**
-        - No scripts/address_extraction.py exists, OR
-        - Evaluator found validation errors in your output
-
-        Actions for creating/updating script:
-        1. **ANALYZE DATA STRUCTURE** (only if creating/fixing script):
-           - Examine 3-5 samples from possible_addresses/ to understand JSON format
-           - Check corresponding input files to understand address location
-           - Plan matching strategy before coding
-
-        2. **CREATE or UPDATE** scripts/address_extraction.py:
-           A. EXTRACTION PHASE:
-           - Process all properties in ./input/
-           - Extract property_parcel_id from input file name
-           - Load possible_addresses/[property_parcel_id].json (candidate addresses)
-           - Parse address from input files
-           - Extract all address attributes following ./schemas/address.json
-           - Get county name from seed.csv file
-
-           B. MATCHING PHASE:
-           - Compare input file address with candidates in possible_addresses/
-           - Use exact matching first, then fuzzy matching if needed
-           - Focus on: street number + street name + unit (if applicable)
-
-           C. OUTPUT PHASE:
-           - Save matched address data to: owners/addresses_mapping.json
-           - Follow address schema: {self.state['schemas']['address.json']}
-
-        3. **TEST THE SCRIPT** - run it and generate output
-
-        📋 OUTPUT STRUCTURE:
-        Generate: owners/addresses_mapping.json following address schema:
-        ```json
-        {{
-          "property_[id]": {{
-            "address": {{
-                "city_name": "MARGATE",
-                "postal_code": "33063",
-                "state_code": "FL",
-                "street_name": "18",
-                "street_number": "6955",
-                "street_post_directional_text": null,
-                "street_pre_directional_text": "NW",
-                "street_suffix_type": "ST",
-                "unit_identifier": null,
-                "latitude": 1234,
-                "longitude": 1234,
-                "plus_four_postal_code": "1234"
-            }}
-          }}
-        }}
-        ```
-
-        ⚠️ CRITICAL RULES:
-        - **NEVER CREATE SCRIPT WITHOUT FIRST CHECKING FOR EXISTING ONE**
-        - **ALWAYS RUN EXISTING SCRIPT FIRST**
-        - Only CREATE script if no existing script found
-        - Only UPDATE script if evaluator finds validation errors
-        - Process ALL properties in ./input/ directory
-        - Follow address schema exactly
-
-        🚨 WORKFLOW ENFORCEMENT:
-        - **FIRST ACTION**: Use read_file tool on scripts/address_extraction.py
-        - **IF EXISTS**: Use execute_code_file tool to run it
-        - **IF DOESN'T EXIST**: Then create it
-        - **IF EVALUATOR REJECTS**: Then update the existing script with specific fixes
-
-        🚀 START: **IMMEDIATELY** check for existing script, run it if exists, then wait for evaluator feedback.
-        """
-
-        # UPDATED ADDRESS EVALUATOR PROMPT
-        evaluator_prompt = f"""
-        You are the ADDRESS EVALUATOR in a multi-agent address matching pipeline.
-
-        🎯 YOUR TASK:
-        Validate address matching completeness and accuracy by checking the generator's output.
-
-        🔄 MANDATORY VALIDATION WORKFLOW:
-
-        STEP 1: CHECK FOR EXISTING VALIDATION SCRIPT AND RUN IT
-        1. **FIRST** check if scripts/address_validation.py already exists using read_file tool
-        2. If the file EXISTS:
-           - **RUN THE EXISTING VALIDATION SCRIPT** using execute_code_file tool
-           - **ANALYZE THE VALIDATION RESULTS** 
-           - **PROCEED TO STEP 2 FOR ADDITIONAL MANUAL VALIDATION**
-        3. If the file DOES NOT EXIST → create it, run it, then proceed to STEP 2
-
-        STEP 2: MANDATORY MANUAL VALIDATION (NEVER SKIP THIS!)
-        **YOU MUST ALWAYS DO THIS VALIDATION:**
-
-        A. **CHECK OUTPUT FILE EXISTS**:
-           - Verify owners/addresses_mapping.json exists and has content
-           - Count how many properties are included
-
-        B. **PICK 3 SAMPLE PROPERTIES** for detailed validation:
-           - Read 3 different input files from ./input/ directory
-           - Extract what the addresses should be from these files manually
-           - Read the corresponding entries in owners/addresses_mapping.json
-
-        C. **VALIDATE ADDRESS COMPONENTS** (CRITICAL - CHECK EVERY FIELD):
-           For each sample property, verify ALL address components exist and are correct:
-           - **street_number** (not null/empty where it should exist)
-           - **street_name** (not null/empty)
-           - **unit_identifier** (null if no unit, correct value if unit exists)
-           - **city_name** (not null/empty)
-           - **postal_code** (not null/empty, correct format)
-           - **state_code** (not null/empty)
-           - **street_pre_directional_text** (N, S, E, W if applicable)
-           - **street_post_directional_text** (directional after street name if applicable)
-           - **street_suffix_type** (ST, AVE, BLVD, etc. if applicable)
-           - **plus_four_postal_code** (4-digit extension if available)
-           - **latitude/longitude** (if available in source)
-
-        D. **COMPARE WITH SOURCE DATA**:
-           - Ensure addresses in output match the actual addresses from input files
-           - Check that address matching logic selected the best candidate
-           - Verify no placeholder values (like "TODO", "TBD", etc.)
-
-        E. **SCHEMA COMPLIANCE CHECK**:
-           - Verify all addresses follow the exact schema format
-           - Check data types are correct
-           - Ensure required fields are present
-
-        STEP 3: VALIDATION DECISION
-        - **If ALL validation checks PASS** → Return "STATUS: ACCEPTED"
-        - **If ANY validation check FAILS** → Return "STATUS: REJECTED" with action plan
-
-        **COMMON ISSUES TO CHECK FOR:**
-        - Missing addresses_mapping.json file
-        - Missing properties (not all input files processed)
-        - Null/empty required address components
-        - Incorrect address components (wrong street name, number, etc.)
-        - Schema violations (wrong data types, missing fields)
-        - Placeholder values instead of real data
-
-        STEP 4: CREATE/UPDATE VALIDATION SCRIPT (Only if needed)
-        If no validation script exists:
-        - CREATE scripts/address_validation.py that:
-          - Reads owners/addresses_mapping.json
-          - Validates against address schema: {self.state['schemas']['address.json']}
-          - Checks for required fields, data types, format compliance
-          - Reports detailed validation results
-
-        📝 RESPONSE FORMAT:
-        Start with:
-        **STATUS: ACCEPTED** or **STATUS: REJECTED**
-
-        If REJECTED, provide specific action plan:
-        - List exactly what is wrong
-        - Provide step-by-step instructions for the generator to fix issues
-        - Be specific about which address components are missing/incorrect
-
-        ✅ VALIDATION CHECKLIST:
-        1. addresses_mapping.json exists in owners/ directory
-        2. Contains address data for ALL properties in input/ directory  
-        3. All address components properly extracted (not null where they should exist)
-        4. Addresses match source data in input files
-        5. Schema compliance - correct format and data types
-        6. No placeholder/TODO values
-        7. Address matching selected best candidates from possible_addresses/
-
-        ⚠️ CRITICAL RULES:
-        - **STEP 2 MANUAL VALIDATION IS MANDATORY** - never skip it
-        - **CHECK EVERY ADDRESS COMPONENT** for 3 sample properties
-        - **COMPARE WITH SOURCE INPUT FILES** to verify accuracy
-        - Only accept if ALL validation criteria are met
-        - Be strict - any missing or incorrect data = REJECTED
-
-        🚨 WORKFLOW ENFORCEMENT:
-        1. **FIRST**: Check for existing validation script
-        2. **RUN SCRIPT**: If exists, execute it
-        3. **MANDATORY**: Do manual validation (compare 3 samples with source)
-        4. **DECISION**: Accept only if everything is perfect
-        5. **IF REJECTED**: Provide specific action plan for generator
-
-        🚀 START: Check for existing validation script, run it, then ALWAYS do manual validation to catch any errors.
-        """
-
-        return create_react_agent(
-            model=self.model,
-            tools=self.tools,
-            prompt=generator_prompt,
-            checkpointer=self.shared_checkpointer
-        )
-
-    async def _create_address_evaluator_agent(self):
-        """Create Address Evaluator agent"""
-        evaluator_prompt = f"""
-        You are the ADDRESS EVALUATOR in a multi-agent address matching pipeline.
-
-        🎯 YOUR TASK:
-        You are responsible for **address matching completeness and accuracy validation ONLY**. You must validate that the addresses_mapping.json file contains properly matched addresses from the input files.
-
-        🔍 YOUR VALIDATION FLOW:
-
-        STEP 1: CREATE VALIDATION SCRIPT
-        First, create a validation script: scripts/address_validation.py that:
-        - Reads owners/addresses_mapping.json
-        - Validates each address against the address schema: {self.state['schemas']['address.json']}
-        - Checks for required fields, data types, and format compliance
-        - Reports validation errors, missing data, or schema violations
-        - Prints detailed validation results
-
-        STEP 2: EXECUTE VALIDATION SCRIPT
-        Run the validation script and analyze the results, ALL ADDRESSES MUST BE VALID AGAINST THE SCHEMA.
-
-        STEP 3: MANUAL VALIDATION
-        For a **sample of AT MOST 3–5 properties**:
-        1. **Check if owners/addresses_mapping.json exists** and has content
-        2. do a checksum to make sure all properties address are extracted
-        3. you MUST **Verify address components** are properly extracted, everysingle attribute must be verified that it exists:
-          Checklist of address components to verify:
-           - street_number
-           - street_name 
-           - unit_identifier
-           - city_name
-           - postal_code
-           - state_code
-           - street_pre_directional_text
-           - street_post_directional_text
-           - street_suffix_type
-           - latitude/longitude if available
-        4. **Compare with input files** to ensure addresses match the source data
-        5. **Verify matching logic** worked correctly by checking a few examples
-
-        ✅ VALIDATION CHECKLIST:
-        1. addresses_mapping.json file exists in owners/ directory
-        2. File contains address data for all properties in input/ directory
-        3. Address components are properly extracted and not null/empty where data exists
-        4. Addresses match the format specified in the address schema
-        5. No placeholder or TODO values in the address data
-        6. Address matching logic correctly identified the best match from possible_addresses/
-        7. Schema validation script runs successfully and reports no errors
-        8.  ALL ADDRESSES MUST BE VALID AGAINST THE SCHEMA.
-
-        📝 RESPONSE FORMAT:
-        Start your response with one of the following:
-        STATUS: ACCEPTED
-        or
-        STATUS: REJECTED
-
-        if REJECTED, REPLY ONLY WITH AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
-
-        🗣️ CONVERSATION RULES:
-        - You must FIRST create and run the validation script
-        - Then perform manual validation on sample data
-        - Only care about address matching completeness and accuracy
-        - Be strict. Accept only if ALL criteria are clearly met
-        - Always include the validation script output in your response
-
-        🚀 START: Create validation script, run it, then check address matching completeness and return your evaluation.
-        """
-
-        return create_react_agent(
-            model=self.model,
-            tools=self.tools,
-            prompt=evaluator_prompt,
-            checkpointer=self.shared_checkpointer
-        )
-
-    async def _agent_speak(self, agent, agent_name: str, turn: int, user_instruction: str) -> str:
-        """Have an agent speak in the conversation - they see all previous messages"""
-        # Copy the exact same implementation from ExtractionGeneratorEvaluatorPair._agent_speak
-        # This is identical to the extraction version
-
-        update_agent_activity(self.state)
-        logger.info(f"     🗣️ {agent_name} speaking (Turn {turn})...")
-        logger.info(f"     👀 {agent_name} using shared checkpointer memory")
-
-        config = {
-            "configurable": {"thread_id": self.shared_thread_id},
-            "recursion_limit": 100
-        }
-
-        messages = [{
-            "role": "user",
-            "content": user_instruction
-        }]
-
-        logger.info(f"     📖 {agent_name} using checkpointer memory...")
-
-        agent_response = ""
-        tool_calls_made = []
-
-        try:
-            timeout_seconds = self.state['agent_timeout_seconds']
-            last_activity = time.time()
-
-            async def check_inactivity():
-                nonlocal last_activity
-                while True:
-                    await asyncio.sleep(10)
-                    current_time = time.time()
-                    if current_time - last_activity > timeout_seconds:
-                        logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
-                        raise asyncio.TimeoutError(f"{agent_name} inactive for {timeout_seconds} seconds")
-
-            inactivity_task = asyncio.create_task(check_inactivity())
-
-            try:
-                async for event in agent.astream_events({"messages": messages}, config, version="v1"):
-                    last_activity = time.time()
-                    update_agent_activity(self.state)
-
-                    kind = event["event"]
-
-                    if kind == "on_chain_start":
-                        logger.info(f"       🔗 {agent_name} chain starting: {event.get('name', 'unknown')}")
-
-                    elif kind == "on_llm_start":
-                        logger.info(f"       🧠 {agent_name} thinking...")
-
-                    elif kind == "on_llm_end":
-                        llm_output = event['data'].get('output', '')
-                        if hasattr(llm_output, 'content'):
-                            content = llm_output.content[:200] + "..." if len(
-                                llm_output.content) > 200 else llm_output.content
-                            logger.info(f"       💭 {agent_name} decided: {content}")
-
-                    elif kind == "on_tool_start":
-                        tool_name = event['name']
-                        tool_input = event['data'].get('input', {})
-                        logger.info(f"       🔧 {agent_name} using tool: {tool_name}")
-                        logger.info(f"       📝 Tool input: {str(tool_input)[:150]}...")
-                        tool_calls_made.append(tool_name)
-
-                    elif kind == "on_tool_end":
-                        tool_name = event['name']
-                        tool_output = event['data'].get('output', '')
-                        success_indicator = "✅" if "error" not in str(tool_output).lower() else "❌"
-                        if tool_name == "execute_code_file":
-                            if "error" in str(tool_output).lower():
-                                self.consecutive_script_failures += 1
-                                logger.warning(
-                                    f"       ❌ Script execution failed ({self.consecutive_script_failures}/{self.max_script_failures})")
-
-                                if self.consecutive_script_failures >= self.max_script_failures:
-                                    logger.error(
-                                        f"       🔄 Script failed {self.max_script_failures} times - triggering restart")
-                                    self.force_restart_now = True
-                                    return "RESTART_TRIGGERED"
-                            else:
-                                self.consecutive_script_failures = 0
-                                logger.info(f"       ✅ Script executed successfully - reset failure counter")
-
-                        logger.info(f"       {success_indicator} {agent_name} tool {tool_name} completed")
-                        logger.info(f"       📤 Result: {str(tool_output)[:100]}...")
-
-                    elif kind == "on_chain_end":
-                        chain_name = event.get('name', 'unknown')
-                        output = event['data'].get('output', '')
-                        logger.info(f"       🎯 {agent_name} chain completed: {chain_name}")
-
-                        if isinstance(output, dict) and 'messages' in output:
-                            last_message = output['messages'][-1] if output['messages'] else None
-                            if last_message and hasattr(last_message, 'content'):
-                                agent_response = last_message.content
-                        elif hasattr(output, 'content'):
-                            agent_response = output.content
-                        elif isinstance(output, str):
-                            agent_response = output
-
-            finally:
-                inactivity_task.cancel()
-                try:
-                    await inactivity_task
-                except asyncio.CancelledError:
-                    pass
-
-            logger.info(f"     ✅ {agent_name} finished speaking")
-            logger.info(f"     🔧 Tools used: {', '.join(tool_calls_made) if tool_calls_made else 'None'}")
-            logger.info(f"     📄 Response length: {len(agent_response)} characters")
-
-            return agent_response or f"{agent_name} completed turn {turn} (no response captured)"
-
-        except asyncio.TimeoutError:
-            logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
-            logger.error(f"     🔄 This will trigger a restart of the address matching process")
-            raise Exception(
-                f"{agent_name} timed out after {timeout_seconds} seconds of inactivity - restarting address matching")
         except Exception as e:
             logger.error(f"     ❌ {agent_name} error: {str(e)}")
             return f"{agent_name} error on turn {turn}: {str(e)}"
@@ -1763,14 +1209,14 @@ class ExtractionGeneratorEvaluatorPair:
             2. **ANALYZE INPUT STRUCTURE** (examine 3-5 sample files)
             3. **ANALYZE SUPPORTING DATA**:
                - owners/owners_schema.json (for person/company data)
-               - owners/addresses_mapping.json (for address extraction)
+               - seed.csv (for address extraction)
                - owners/layout_data.json, owners/structure_data.json, owners/utility_data.json
             4. **CREATE or UPDATE** scripts/data_extractor.py that generates output structure below
 
             📂 REQUIRED OUTPUT STRUCTURE: this output should be generated through a data_extraction.py script
             if any file don't have data, DO NOT create it, example: if input data don't have flood_storm_information don't create this file
             ./data/[property_parcel_id]/property.json
-            ./data/[property_parcel_id]/address.json use owners/addresses_mapping.json in address extraction along with the input file
+            ./data/[property_parcel_id]/address.json use seed.csv in address extraction along with the input file
             ./data/[property_parcel_id]/lot.json
             ./data/[property_parcel_id]/tax_*.json
             ./data/[property_parcel_id]/flood_storm_information.json
@@ -1833,7 +1279,7 @@ class ExtractionGeneratorEvaluatorPair:
             1. READ all schema files from ./schemas/ directory to understand data structures
             2. Analyze input structure (examine 3-5 sample files)
             3. Analyze the owners data from owners/owners_schema.json to understand how to extract person/company data
-            4. Analyze the address structure in the owners/addresses_mapping.json to use in extraction process
+            4. Analyze the address structure in the seed.csv to use in extraction process
             4. Generate a universal extraction script: `scripts/data_extractor.py` that Map input data to the schemas, and save the extracted data as JSON files in the `data` folder.
             5. The script MUST be execeutable and you MUST NOT QUITE until the script is executed successfully with No errors
             6. Execute the script to process ALL input files
@@ -1910,8 +1356,19 @@ class ExtractionGeneratorEvaluatorPair:
 
             ✅ **Address Validation (YOU CHECK COMPONENTS):**
             - Read the input file and EXTRACT the address yourself
-            - Read the address.json file and CHECK each component
-            - YOU verify street_number, street_name, etc. are properly extracted
+            - Read the address.json file and CHECK each component is correctly extracted from seed.csv
+            - you MUST **Verify Property address components** are properly extracted, every single attribute must be verified that it exists your reference is seed.csv and input file:
+              Checklist of address components to verify Property address NOT mailing address:
+               - street_number
+               - street_name 
+               - unit_identifier
+               - city_name
+               - postal_code from "/seed.csv" file if not provided then use the input file
+               - state_code
+               - street_pre_directional_text
+               - street_post_directional_text
+               - street_suffix_type
+               - latitude/longitude if available
 
             STEP 3: **YOUR DECISION BASED ON YOUR ACTUAL CHECKING**
 
@@ -2277,7 +1734,9 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
 
             # Create mapping from parcel_id (original folder name) to http_request and source_identifier
             for _, row in seed_df.iterrows():
-                parcel_id = str(row['parcel_id'])
+                parcel_id = str(row.get('parcel_id')) if row.get('parcel_id') is not None else str(
+                    row.get('source_identifier'))
+                logger.info(f"   📋 Processing seed for parcel_id: {parcel_id}")
                 method = row.get('method')
                 url = row.get('url')
                 multiValueQueryString = row.get('multiValueQueryString')
@@ -2408,7 +1867,7 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
 
         try:
             result = subprocess.run(
-                ["npx", "-y", "@elephant-xyz/cli@1.12.0", "validate-and-upload", "submit", "--dry-run", "--output-csv",
+                ["npx", "-y", "@elephant-xyz/cli", "validate-and-upload", "submit", "--dry-run", "--output-csv",
                  "results.csv"],
                 cwd=BASE_DIR,
                 capture_output=True,
@@ -2758,18 +2217,6 @@ def check_extraction_complete(state: WorkflowState) -> bool:
     return False
 
 
-def check_address_matching_complete(state: WorkflowState) -> bool:
-    """Check if address matching is complete"""
-    addresses_mapping_path = os.path.join(BASE_DIR, "owners", "addresses_mapping.json")
-
-    if os.path.exists(addresses_mapping_path):
-        logger.info("Address matching complete - addresses_mapping.json exists")
-        return True
-
-    logger.info("Address matching not complete - addresses_mapping.json not found")
-    return False
-
-
 async def owner_analysis_node(state: WorkflowState) -> WorkflowState:
     """Node 1.5: Handle owner name analysis and schema generation"""
     if state['current_node'] != 'owner_analysis':
@@ -2819,54 +2266,6 @@ async def owner_analysis_node(state: WorkflowState) -> WorkflowState:
     except Exception as e:
         logger.error(f"Error in owner analysis: {e}")
         state['owner_analysis_complete'] = False
-        state['validation_errors'].append(str(e))
-
-    return state
-
-
-async def address_matching_node(state: WorkflowState) -> WorkflowState:
-    """Enhanced Node 2: Handle address matching with generator-evaluator pattern"""
-    logger.info(
-        f"=== Starting Node 2: Address Matching & Validation with Evaluator (Attempt {state['retry_count'] + 1}) ===")
-
-    if state['current_node'] != 'address_matching':
-        state['retry_count'] = 0
-    state['current_node'] = 'address_matching'
-    print_running("Address Matching")
-
-    # Check if already complete
-    if check_address_matching_complete(state):
-        logger.info("Address matching already complete, skipping to next node")
-        state['address_matching_complete'] = True
-        state['all_addresses_matched'] = True
-        return state
-
-    # Create the generator-evaluator pair
-    address_gen_eval_pair = AddressMatchingGeneratorEvaluatorPair(
-        state=state,
-        model=state['model'],
-        tools=state['tools'],
-        schemas=state['schemas']
-    )
-
-    try:
-        # Run the feedback loop
-        updated_state = await address_gen_eval_pair.run_feedback_loop()
-
-        # Update the original state with results
-        state.update(updated_state)
-
-        if state['all_addresses_matched']:
-            logger.info(
-                "✅ Address Matching Generator-Evaluator completed successfully - all addresses matched and validated")
-        else:
-            logger.warning(
-                "⚠️ Address Matching Generator-Evaluator completed but not all addresses were properly matched")
-
-    except Exception as e:
-        logger.error(f"Error in address matching generator-evaluator pair: {e}")
-        state['all_addresses_matched'] = False
-        state['address_matching_complete'] = False
         state['validation_errors'].append(str(e))
 
     return state
@@ -2977,7 +2376,7 @@ async def structure_extraction_node(state: WorkflowState) -> WorkflowState:
 def should_retry_owner_analysis(state: WorkflowState) -> str:
     """Determine if owner analysis node should retry"""
 
-    # ✅ Check for timeout first
+    # Check for timeout first
     if should_restart_due_to_timeout(state):
         logger.warning("⏰ Owner analysis timeout detected - restarting")
         state['generation_restart_count'] += 1
@@ -2986,15 +2385,15 @@ def should_retry_owner_analysis(state: WorkflowState) -> str:
 
     # Normal completion check
     if state.get('owner_analysis_complete', False):
-        state['retry_count'] = 0  # Reset for next node
-        return "address_matching"  # Go to address matching next
+        state['retry_count'] = 0
+        return "structure_extraction"
     elif state['retry_count'] < state['max_retries']:
         state['retry_count'] += 1
         logger.warning(f"Retrying owner analysis node (attempt {state['retry_count']}/{state['max_retries']})")
         return "owner_analysis"
     else:
         logger.error("Max retries reached for owner analysis node")
-        return "address_matching"
+        return "structure_extraction"
 
 
 def should_retry_extraction(state: WorkflowState) -> str:
@@ -3010,33 +2409,10 @@ def should_retry_extraction(state: WorkflowState) -> str:
         return "end"
 
 
-def should_retry_address_matching(state: WorkflowState) -> str:
-    """Determine if address matching node should retry"""
-
-    # ✅ Check for timeout first
-    if should_restart_due_to_timeout(state):
-        logger.warning("⏰ Address matching timeout detected - restarting")
-        state['generation_restart_count'] += 1
-        state['last_agent_activity'] = time.time()
-        return "address_matching"  # Restart same node
-
-    # Normal completion check
-    if state.get('address_matching_complete', False):
-        state['retry_count'] = 0  # Reset for next node
-        return "structure_extraction"  # Go to structure extraction next
-    elif state['retry_count'] < state['max_retries']:
-        state['retry_count'] += 1
-        logger.warning(f"Retrying address matching node (attempt {state['retry_count']}/{state['max_retries']})")
-        return "address_matching"
-    else:
-        logger.error("Max retries reached for address matching node")
-        return "structure_extraction"
-
-
 def should_retry_structure_extraction(state: WorkflowState) -> str:
     """Determine if structure extraction node should retry"""
 
-    # ✅ Check for timeout first
+    # Check for timeout first
     if should_restart_due_to_timeout(state):
         logger.warning("⏰ Structure extraction timeout detected - restarting")
         state['generation_restart_count'] += 1
@@ -3066,10 +2442,9 @@ def should_retry_structure_extraction(state: WorkflowState) -> str:
     on_giveup=lambda details: logger.error(f"💥 Git clone failed after {details['tries']} attempts")
 )
 def download_scripts_from_github():
-    """Download scripts from GitHub repository with retry logic"""
-    repo_url = "https://github.com/elephant-xyz/county-data-extraction-scripts"
-
-    logger.info(f"🔄 Checking GitHub repository: {repo_url}")
+    """Alternative method using GitHub API"""
+    import requests
+    import base64
 
     # Read county name from seed.csv
     seed_csv_path = os.path.join(BASE_DIR, "seed.csv")
@@ -3077,76 +2452,60 @@ def download_scripts_from_github():
 
     if os.path.exists(seed_csv_path):
         try:
-            import pandas as pd
             seed_df = pd.read_csv(seed_csv_path)
             if 'County' in seed_df.columns and len(seed_df) > 0:
                 county_name = str(seed_df['County'].iloc[0]).strip()
                 logger.info(f"📍 Found county: {county_name}")
-            else:
-                logger.error("❌ No 'County' column found in seed.csv or file is empty")
-                return False
         except Exception as e:
             logger.error(f"❌ Error reading seed.csv: {e}")
             return False
-    else:
-        logger.error("❌ seed.csv file not found")
-        return False
 
     if not county_name:
         logger.error("❌ Could not determine county name")
         return False
 
     try:
-        # Create a temporary directory
-        with tempfile.TemporaryDirectory() as temp_dir:
-            logger.info(f"📁 Cloning repository to temporary directory...")
+        # GitHub API URL for the counties directory
+        api_url = f"https://api.github.com/repos/elephant-xyz/AI-Agent/contents/counties/{county_name}"
 
-            # Clone with shallow clone for speed and timeout settings
-            repo = git.Repo.clone_from(
-                repo_url,
-                temp_dir,
-                multi_options=[
-                    '--depth=1',  # Shallow clone
-                    '--single-branch',
-                    '--config http.timeout=60',
-                    '--config http.postBuffer=524288000'
-                ],
-                allow_unsafe_options=True
-            )
-            logger.info("✅ Repository cloned successfully")
+        logger.info(f"🔄 Fetching from GitHub API: {api_url}")
 
-            # Check county-specific directory
-            county_dir = os.path.join(temp_dir, county_name)
-            logger.info(f"🔍 Looking for scripts in: {county_name}/")
+        response = requests.get(api_url, timeout=30)
 
-            if os.path.exists(county_dir) and os.path.isdir(county_dir):
-                # Copy scripts from county directory
-                local_scripts_dir = os.path.join(BASE_DIR, "scripts")
-                os.makedirs(local_scripts_dir, exist_ok=True)
+        if response.status_code == 404:
+            logger.error(f"❌ County directory '{county_name}' not found in repository")
+            return False
+        elif response.status_code != 200:
+            logger.error(f"❌ GitHub API request failed: {response.status_code}")
+            return False
 
-                copied_files = []
-                for file in os.listdir(county_dir):
-                    if file.endswith('.py'):
-                        src = os.path.join(county_dir, file)
-                        dst = os.path.join(local_scripts_dir, file)
-                        shutil.copy2(src, dst)
-                        copied_files.append(file)
-                        logger.info(f"📄 Copied: {file}")
+        files_data = response.json()
+        local_scripts_dir = os.path.join(BASE_DIR, "scripts")
+        os.makedirs(local_scripts_dir, exist_ok=True)
 
-                if copied_files:
-                    logger.info(f"✅ Downloaded {len(copied_files)} scripts from {county_name}/ directory")
-                    return True
-                else:
-                    logger.warning(f"⚠️ No Python scripts found in {county_name}/ directory")
-                    return False
-            else:
-                logger.warning(f"⚠️ No '{county_name}/' directory found in repository")
-                return False
+        copied_files = []
+
+        for file_info in files_data:
+            if file_info['name'].endswith('.py') and file_info['type'] == 'file':
+                # Download the file content
+                file_response = requests.get(file_info['download_url'], timeout=30)
+                if file_response.status_code == 200:
+                    file_path = os.path.join(local_scripts_dir, file_info['name'])
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(file_response.text)
+                    copied_files.append(file_info['name'])
+                    logger.info(f"📄 Downloaded: {file_info['name']}")
+
+        if copied_files:
+            logger.info(f"✅ Downloaded {len(copied_files)} scripts from {county_name}/ directory")
+            return True
+        else:
+            logger.warning(f"⚠️ No Python scripts found in {county_name}/ directory")
+            return False
 
     except Exception as e:
-        # Re-raise for backoff to handle
-        logger.error(f"❌ Error during git clone: {e}")
-        raise
+        logger.error(f"❌ Error using GitHub API: {e}")
+        return False
 
 
 async def run_three_node_workflow():
@@ -3172,7 +2531,7 @@ async def run_three_node_workflow():
     # Load schemas from IPFS
     logger.info("Downloading scripts from GitHub repository...")
     if not download_scripts_from_github():
-        logger.error("Failed to download scripts from GitHub repository - exiting")
+        logger.error("Failed to download scripts from GitHub repository")
 
     logger.info("Loading schemas from IPFS and saving to ./schemas/ directory...")
     schemas, stub_files = load_schemas_from_ipfs(save_to_disk=True)
@@ -3253,7 +2612,6 @@ async def run_three_node_workflow():
         schemas=schemas,
         stub_files=stub_files,
         extraction_complete=False,
-        address_matching_complete=False,
         owner_analysis_complete=False,
         structure_extraction_complete=False,
         validation_errors=[],
@@ -3264,7 +2622,6 @@ async def run_three_node_workflow():
         retry_count=0,
         max_retries=3,
         all_files_processed=False,
-        all_addresses_matched=False,
         error_history=[],
         consecutive_same_errors=0,
         last_error_hash="",
@@ -3280,7 +2637,6 @@ async def run_three_node_workflow():
 
     # Add nodes
     workflow.add_node("owner_analysis", owner_analysis_node)
-    workflow.add_node("address_matching", address_matching_node)
     workflow.add_node("structure_extraction", structure_extraction_node)
     workflow.add_node("extraction", extraction_and_validation_node)
 
@@ -3289,16 +2645,7 @@ async def run_three_node_workflow():
         should_retry_owner_analysis,
         {
             "owner_analysis": "owner_analysis",  # Retry same node
-            "address_matching": "address_matching"  # Move to next
-        }
-    )
-
-    workflow.add_conditional_edges(
-        "address_matching",
-        should_retry_address_matching,
-        {
-            "address_matching": "address_matching",  # Retry same node
-            "structure_extraction": "structure_extraction"
+            "structure_extraction": "structure_extraction"  # Move to next
         }
     )
 
@@ -3332,8 +2679,7 @@ async def run_three_node_workflow():
         final_state = await app.ainvoke(initial_state)
 
         # Log final status
-        if final_state['owner_analysis_complete'] and final_state['all_addresses_matched'] and final_state[
-            'all_files_processed']:
+        if final_state['owner_analysis_complete'] and final_state['all_files_processed']:
             print_status("Workflow completed successfully - all tasks completed")
             logger.info("✅ Workflow completed successfully - all tasks completed")
         else:
@@ -3341,8 +2687,6 @@ async def run_three_node_workflow():
             logger.warning("⚠️ Workflow completed with incomplete tasks")
             if not final_state['owner_analysis_complete']:
                 logger.warning("- Owner analysis was not completed")
-            if not final_state['all_addresses_matched']:
-                logger.warning("- Not all addresses were matched")
             if not final_state['all_files_processed']:
                 logger.warning("- Not all files were processed")
 
