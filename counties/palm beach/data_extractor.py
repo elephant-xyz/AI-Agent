@@ -47,8 +47,6 @@ def remove_null_files(directory):
                 except Exception:
                     continue
 
-with open("./owners/addresses_mapping.json") as f:
-    address_map = json.load(f)
 with open("./owners/owners_schema.json") as f:
     owners_schema = json.load(f)
 with open("./owners/layout_data.json") as f:
@@ -70,20 +68,9 @@ for input_file in input_files:
         html = f.read()
     soup = BeautifulSoup(html, "html.parser")
     addr_key = f"property_{parcel_id}"
-    address = address_map.get(addr_key, {}).get("address", {})
-    # --- ADDRESS ---
-    address_schema_fields = [
-        "source_http_request", "request_identifier", "city_name", "country_code", "county_name", "latitude", "longitude", "plus_four_postal_code", "postal_code", "state_code", "street_name", "street_post_directional_text", "street_pre_directional_text", "street_number", "street_suffix_type", "unit_identifier", "township", "range", "section", "block"
-    ]
-    if address:
-        for k in address_schema_fields:
-            if k not in address:
-                address[k] = None
-        with open(os.path.join(property_dir, "address.json"), "w") as f:
-            json.dump(address, f, indent=2)
     # --- PROPERTY ---
     property_json = {
-        "source_http_request": address.get("source_http_request", {}),
+        "source_http_request": None,
         "request_identifier": parcel_id,
         "livable_floor_area": None,
         "number_of_units_type": None,
@@ -208,7 +195,7 @@ for input_file in input_files:
                 if price == 0:
                     price = None
                 sales_json = {
-                    "source_http_request": address.get("source_http_request", {}),
+                    "source_http_request": None,
                     "request_identifier": f"{parcel_id}_sale_{i+1}",
                     "ownership_transfer_date": date,
                     "purchase_price_amount": price
@@ -292,23 +279,34 @@ for input_file in input_files:
         def safe_val(val):
             try:
                 if val is None:
-                    return None
+                    return 0.01
                 v = float(val)
+                if v < 0:
+                    return 0.01
+                # Round to 2 decimal places, and if 0, set to 0.01
+                v = round(v, 2)
                 if v == 0:
-                    return None
-                return round(v, 2)
+                    return 0.01
+                return v
             except Exception:
-                return None
+                return 0.01
+        # Ensure property_taxable_value_amount is a positive number with at most 2 decimal places
+        taxable_val = safe_val(taxable.get(year))
+        assessed_val = safe_val(assessed.get(year))
+        market_val = safe_val(market.get(year))
+        building_val = safe_val(building.get(year))
+        land_val = safe_val(land.get(year))
+        monthly_tax_val = safe_val(monthly_tax.get(year))
         tax_json = {
-            "source_http_request": address.get("source_http_request", {}),
+            "source_http_request": None,
             "request_identifier": f"{parcel_id}_tax_{year}",
             "tax_year": clean_int(year),
-            "property_assessed_value_amount": safe_val(assessed.get(year)),
-            "property_market_value_amount": safe_val(market.get(year)),
-            "property_building_amount": safe_val(building.get(year)),
-            "property_land_amount": safe_val(land.get(year)),
-            "property_taxable_value_amount": safe_val(taxable.get(year)),
-            "monthly_tax_amount": monthly_tax.get(year),
+            "property_assessed_value_amount": assessed_val,
+            "property_market_value_amount": market_val,
+            "property_building_amount": building_val,
+            "property_land_amount": land_val,
+            "property_taxable_value_amount": taxable_val,
+            "monthly_tax_amount": monthly_tax_val,
             "period_end_date": None,
             "period_start_date": None
         }
@@ -318,11 +316,20 @@ for input_file in input_files:
     if parcel_id in owners_schema:
         owners_by_date = owners_schema[parcel_id]["owners_by_date"]
         for i, (date, owners) in enumerate(owners_by_date.items()):
+            person_count = 0
+            company_count = 0
+            seen_persons = set()
+            seen_companies = set()
             for j, owner in enumerate(owners):
                 if owner["type"] == "person":
+                    person_key = (owner.get("first_name"), owner.get("last_name"), owner.get("middle_name"))
+                    if person_key in seen_persons:
+                        continue
+                    seen_persons.add(person_key)
+                    person_count += 1
                     person_json = {
-                        "source_http_request": address.get("source_http_request", {}),
-                        "request_identifier": f"{parcel_id}_person_{i+1}_{j+1}",
+                        "source_http_request": None,
+                        "request_identifier": f"{parcel_id}_person_{i+1}_{person_count}",
                         "birth_date": None,
                         "first_name": owner.get("first_name"),
                         "last_name": owner.get("last_name"),
@@ -332,35 +339,54 @@ for input_file in input_files:
                         "us_citizenship_status": None,
                         "veteran_status": None
                     }
-                    with open(os.path.join(property_dir, f"person_{i+1}_{j+1}.json"), "w") as f:
+                    with open(os.path.join(property_dir, f"person_{i+1}_{person_count}.json"), "w") as f:
                         json.dump(person_json, f, indent=2)
                 elif owner["type"] == "company":
+                    company_key = owner.get("name")
+                    if company_key in seen_companies:
+                        continue
+                    seen_companies.add(company_key)
+                    company_count += 1
                     company_json = {
-                        "source_http_request": address.get("source_http_request", {}),
-                        "request_identifier": f"{parcel_id}_company_{i+1}_{j+1}",
+                        "source_http_request": None,
+                        "request_identifier": f"{parcel_id}_company_{i+1}_{company_count}",
                         "name": owner.get("name")
                     }
-                    with open(os.path.join(property_dir, f"company_{i+1}_{j+1}.json"), "w") as f:
+                    with open(os.path.join(property_dir, f"company_{i+1}_{company_count}.json"), "w") as f:
                         json.dump(company_json, f, indent=2)
     # --- RELATIONSHIP FILES ---
     if parcel_id in owners_schema:
         owners_by_date = owners_schema[parcel_id]["owners_by_date"]
         for i, (date, owners) in enumerate(owners_by_date.items()):
             sales_file = f"sales_{i+1}.json"
+            person_count = 0
+            company_count = 0
+            seen_persons = set()
+            seen_companies = set()
             for j, owner in enumerate(owners):
                 if owner["type"] == "person":
+                    person_key = (owner.get("first_name"), owner.get("last_name"), owner.get("middle_name"))
+                    if person_key in seen_persons:
+                        continue
+                    seen_persons.add(person_key)
+                    person_count += 1
                     rel = {
-                        "to": {"/": f"./person_{i+1}_{j+1}.json"},
+                        "to": {"/": f"./person_{i+1}_{person_count}.json"},
                         "from": {"/": f"./{sales_file}"}
                     }
-                    with open(os.path.join(property_dir, f"relationship_sales_person_{i+1}_{j+1}.json"), "w") as f:
+                    with open(os.path.join(property_dir, f"relationship_sales_person_{i+1}_{person_count}.json"), "w") as f:
                         json.dump(rel, f, indent=2)
                 elif owner["type"] == "company":
+                    company_key = owner.get("name")
+                    if company_key in seen_companies:
+                        continue
+                    seen_companies.add(company_key)
+                    company_count += 1
                     rel = {
-                        "to": {"/": f"./company_{i+1}_{j+1}.json"},
+                        "to": {"/": f"./company_{i+1}_{company_count}.json"},
                         "from": {"/": f"./{sales_file}"}
                     }
-                    with open(os.path.join(property_dir, f"relationship_sales_company_{i+1}_{j+1}.json"), "w") as f:
+                    with open(os.path.join(property_dir, f"relationship_sales_company_{i+1}_{company_count}.json"), "w") as f:
                         json.dump(rel, f, indent=2)
     # --- STRUCTURE ---
     if addr_key in structure_data:
@@ -373,18 +399,19 @@ for input_file in input_files:
         for k in required_structure_fields:
             if k not in struct:
                 struct[k] = None
-        struct["source_http_request"] = address.get("source_http_request", {})
+        struct["source_http_request"] = None
         struct["request_identifier"] = parcel_id
         with open(os.path.join(property_dir, "structure.json"), "w") as f:
             json.dump(struct, f, indent=2)
     # --- UTILITY ---
     if addr_key in utility_data:
         util = utility_data[addr_key]
-        util["source_http_request"] = address.get("source_http_request", {})
+        util["source_http_request"] = None
         util["request_identifier"] = parcel_id
         with open(os.path.join(property_dir, "utility.json"), "w") as f:
             json.dump(util, f, indent=2)
     # --- LAYOUT ---
+    # Count bedrooms, full baths, half baths from structural_elements table
     bedroom_count = 0
     bathroom_count = 0
     half_bath_count = 0
@@ -402,13 +429,14 @@ for input_file in input_files:
                     bathroom_count = int(val)
                 if ("half bath" in label or ("half" in label and "bath" in label)) and val.isdigit():
                     half_bath_count = int(val)
+    # Remove any existing layout files
     for f in os.listdir(property_dir):
         if f.startswith("layout_") and f.endswith(".json"):
             os.remove(os.path.join(property_dir, f))
-    layout_idx = 1
+    # Create layout files for each bedroom, full bath, half bath
     for i in range(bedroom_count):
         layout = {
-            "source_http_request": address.get("source_http_request", {}),
+            "source_http_request": None,
             "request_identifier": f"{parcel_id}_layout_bedroom_{i+1}",
             "space_type": "Bedroom",
             "flooring_material_type": None,
@@ -442,12 +470,11 @@ for input_file in input_files:
             "pool_surface_type": None,
             "pool_water_quality": None
         }
-        with open(os.path.join(property_dir, f"layout_{layout_idx}.json"), "w") as f:
+        with open(os.path.join(property_dir, f"layout_bedroom_{i+1}.json"), "w") as f:
             json.dump(layout, f, indent=2)
-        layout_idx += 1
     for i in range(bathroom_count):
         layout = {
-            "source_http_request": address.get("source_http_request", {}),
+            "source_http_request": None,
             "request_identifier": f"{parcel_id}_layout_bathroom_{i+1}",
             "space_type": "Full Bathroom",
             "flooring_material_type": None,
@@ -481,12 +508,11 @@ for input_file in input_files:
             "pool_surface_type": None,
             "pool_water_quality": None
         }
-        with open(os.path.join(property_dir, f"layout_{layout_idx}.json"), "w") as f:
+        with open(os.path.join(property_dir, f"layout_bathroom_{i+1}.json"), "w") as f:
             json.dump(layout, f, indent=2)
-        layout_idx += 1
     for i in range(half_bath_count):
         layout = {
-            "source_http_request": address.get("source_http_request", {}),
+            "source_http_request": None,
             "request_identifier": f"{parcel_id}_layout_halfbath_{i+1}",
             "space_type": "Half Bathroom / Powder Room",
             "flooring_material_type": None,
@@ -520,20 +546,115 @@ for input_file in input_files:
             "pool_surface_type": None,
             "pool_water_quality": None
         }
-        with open(os.path.join(property_dir, f"layout_{layout_idx}.json"), "w") as f:
+        with open(os.path.join(property_dir, f"layout_halfbath_{i+1}.json"), "w") as f:
             json.dump(layout, f, indent=2)
-        layout_idx += 1
+    # Ensure total layout files = bedrooms + full baths + half baths
+    layout_files = [f for f in os.listdir(property_dir) if f.startswith("layout_") and f.endswith(".json")]
+    assert len(layout_files) == bedroom_count + bathroom_count + half_bath_count, f"Layout file count mismatch for {parcel_id}"
     # --- LOT ---
     lot_json = None
     lot_schema_fields = [
         "source_http_request", "request_identifier", "lot_type", "lot_length_feet", "lot_width_feet", "lot_area_sqft", "landscaping_features", "view", "fencing_type", "fence_height", "fence_length", "driveway_material", "driveway_condition", "lot_condition_issues"
     ]
     lot_json = {k: None for k in lot_schema_fields}
-    lot_json["source_http_request"] = address.get("source_http_request", {})
+    lot_json["source_http_request"] = None
     lot_json["request_identifier"] = parcel_id
 
     with open(os.path.join(property_dir, "lot.json"), "w") as f:
         json.dump(lot_json, f, indent=2)
-    # --- REMOVE NULL/EMPTY FILES ---
+    # --- ADDRESS EXTRACTION ---
+    # Extract address from input file and supplement with seed.csv if needed
+    import csv
+    seed_data = {}
+    if os.path.exists('seed.csv'):
+        with open('seed.csv', newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                sid = row.get('source_identifier') or row.get('address')
+                if sid:
+                    seed_data[str(sid).strip()] = row
+    address_json = {
+        "source_http_request": None,
+        "request_identifier": parcel_id,
+        "city_name": None,
+        "country_code": "US",
+        "county_name": "PALM BEACH",
+        "latitude": None,
+        "longitude": None,
+        "plus_four_postal_code": None,
+        "postal_code": None,
+        "state_code": "FL",
+        "street_name": None,
+        "street_post_directional_text": None,
+        "street_pre_directional_text": None,
+        "street_number": None,
+        "street_suffix_type": None,
+        "unit_identifier": None,
+        "township": None,
+        "range": None,
+        "section": None,
+        "block": None
+    }
+    # Try to extract from MainContent_lblLocation
+    location = soup.find(id="MainContent_lblLocation")
+    if location:
+        address_line = location.text.strip()
+        # Try to parse street number, name, suffix, unit
+        address_parts = address_line.split()
+        if address_parts and address_parts[0].isdigit():
+            address_json["street_number"] = address_parts[0]
+            suffix_map = {
+                "BLVD": "Blvd", "AVE": "Ave", "ST": "St", "DR": "Dr", "LN": "Ln", "RD": "Rd", "CT": "Ct", "PL": "Pl", "WAY": "Way", "CIR": "Cir", "PKWY": "Pkwy", "TRAIL": "Trl", "TER": "Ter", "PLZ": "Plz", "HWY": "Hwy", "LOOP": "Loop", "BND": "Bnd", "CV": "Cv", "CRK": "Crk", "MNR": "Mnr", "TRL": "Trl", "PT": "Pt", "SQ": "Sq", "RUN": "Run", "ROW": "Row", "XING": "Xing", "WALK": "Walk", "PATH": "Path", "BCH": "Bch", "ISLE": "Isle", "PLS": "Pls", "PLN": "Pln", "PASS": "Pass", "RTE": "Rte", "EST": "Est", "ESTS": "Ests", "VLG": "Vlg", "VLGS": "Vlgs", "VILLAGE": "Vlg", "VILLAGES": "Vlgs", "COVE": "Cv", "HILL": "Hl", "HILLS": "Hls", "VIEW": "Vw", "VIEWS": "Vws", "COURT": "Ct", "CRES": "Cres", "CRESCENT": "Cres", "GROVE": "Grv", "GROVES": "Grvs", "MEADOW": "Mdw", "MEADOWS": "Mdws", "RIDGE": "Rdg", "RIDGES": "Rdgs", "TERRACE": "Ter", "TERR": "Ter", "PARK": "Park", "PARKWAY": "Pkwy", "CROSSING": "Xing", "CROSSINGS": "Xing", "LANDING": "Lndg", "LANDINGS": "Lndg", "GLEN": "Gln", "GLENS": "Glns", "LAKE": "Lk", "LAKES": "Lks", "CREEK": "Crk", "CREEKS": "Crk", "BAY": "Bay", "BAYS": "Bay", "POINT": "Pt", "POINTS": "Pt", "SHORE": "Shr", "SHORES": "Shrs", "WOOD": "Wd", "WOODS": "Wds", "FOREST": "Frst", "FORESTS": "Frst", "ESTATE": "Est", "ESTATES": "Ests", "MOUNT": "Mt", "MOUNTAIN": "Mtn", "MOUNTAINS": "Mtns", "CAMP": "Cp", "CAMPS": "Cp", "CAMPUS": "Cp", "CENTER": "Ctr", "CENTERS": "Ctrs", "PLAZA": "Plz", "PLAZAS": "Plz", "SQUARE": "Sq", "SQUARES": "Sqs", "STREET": "St", "AVENUE": "Ave", "DRIVE": "Dr", "ROAD": "Rd", "LANE": "Ln", "COURT": "Ct", "PLACE": "Pl", "WAY": "Way", "CIRCLE": "Cir", "HIGHWAY": "Hwy", "BEND": "Bnd"
+            }
+            # Find suffix
+            suffix = None
+            for i in range(len(address_parts)-1, 0, -1):
+                part = address_parts[i].upper().replace(",", "")
+                if part in suffix_map:
+                    suffix = suffix_map[part]
+                    address_json["street_suffix_type"] = suffix
+                    address_json["street_name"] = " ".join(address_parts[1:i])
+                    if i+1 < len(address_parts):
+                        address_json["unit_identifier"] = " ".join(address_parts[i+1:])
+                    break
+            if not suffix:
+                address_json["street_suffix_type"] = None
+                address_json["street_name"] = " ".join(address_parts[1:])
+        # Try to extract pre/post directionals
+        for idx, part in enumerate(address_parts):
+            up = part.upper()
+            if up in ["N", "S", "E", "W", "NE", "NW", "SE", "SW"]:
+                if idx == 1:
+                    address_json["street_pre_directional_text"] = up
+                elif idx == len(address_parts)-2:
+                    address_json["street_post_directional_text"] = up
+    city = soup.find(id="MainContent_lblMunicipality")
+    if city:
+        address_json["city_name"] = city.text.strip().upper()
+    # Supplement with seed.csv if available
+    if parcel_id in seed_data:
+        row = seed_data[parcel_id]
+        # Try to parse address for postal_code and plus_four_postal_code
+        addr = row.get('address') or ''
+        # Example: "827 HILLCREST BLVD, WEST PALM BEACH, FL 31610, US"
+        addr_parts = [a.strip() for a in addr.split(',')]
+        if len(addr_parts) >= 3:
+            # Try to get postal code from the 3rd part
+            state_zip = addr_parts[2].split()
+            if len(state_zip) >= 2:
+                address_json["postal_code"] = state_zip[1][:5]
+        if not address_json["city_name"] and len(addr_parts) >= 2:
+            address_json["city_name"] = addr_parts[1].strip().upper()
+        # Try to get plus_four_postal_code if present
+        if len(state_zip) >= 3:
+            plus4 = state_zip[2]
+            if len(plus4) == 4 and plus4.isdigit():
+                address_json["plus_four_postal_code"] = plus4
+    # Fill required fields with null if missing
+    for k in ["city_name", "country_code", "county_name", "latitude", "longitude", "plus_four_postal_code", "postal_code", "state_code", "street_name", "street_post_directional_text", "street_pre_directional_text", "street_number", "street_suffix_type", "unit_identifier", "township", "range", "section", "block"]:
+        if k not in address_json:
+            address_json[k] = None
+    with open(os.path.join(property_dir, "address.json"), "w") as f:
+        json.dump(address_json, f, indent=2)
     remove_null_files(property_dir)
 # End of script
