@@ -1161,9 +1161,10 @@ class ExtractionGeneratorEvaluatorPair:
                     1. Use the filesystem tools to read/modify the extraction script
                     2. You MUST understand all the root causes of the errors to update data_extraction.py script to fix th extraction errors
                     3. read the Schema inside ./schemas/ directory to understand the required structure, you MUST follow the exact structure provided in the schemas.
-                    4. look AGAIN at the input data to know how you will extract the data OR fix the extraction script
-                    4. Fix ALL the specific errors mentioned above
-                    5. run the script 
+                    4. read seed.csv file to understand the address extraction
+                    5. look AGAIN at the input data to know how you will extract the data OR fix the extraction script
+                    6. Fix ALL the specific errors mentioned above
+                    7. run the script 
 
                 DO NOT just acknowledge - TAKE ACTION NOW with tools to fix these issues.""")
 
