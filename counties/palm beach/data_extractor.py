@@ -608,18 +608,29 @@ for input_file in input_files:
             }
             # Find suffix
             suffix = None
+            suffix_idx = None
             for i in range(len(address_parts)-1, 0, -1):
                 part = address_parts[i].upper().replace(",", "")
                 if part in suffix_map:
                     suffix = suffix_map[part]
+                    suffix_idx = i
                     address_json["street_suffix_type"] = suffix
-                    address_json["street_name"] = " ".join(address_parts[1:i])
-                    if i+1 < len(address_parts):
-                        address_json["unit_identifier"] = " ".join(address_parts[i+1:])
                     break
+            # Remove directionals from street_name
+            street_name_parts = address_parts[1:suffix_idx] if suffix_idx else address_parts[1:]
+            # Remove any part that is a directional
+            directionals = {"N", "S", "E", "W", "NE", "NW", "SE", "SW"}
+            street_name_clean = " ".join([p for p in street_name_parts if p.upper() not in directionals])
+            address_json["street_name"] = street_name_clean if street_name_clean else None
+            if suffix_idx and suffix_idx+1 < len(address_parts):
+                address_json["unit_identifier"] = " ".join(address_parts[suffix_idx+1:])
             if not suffix:
                 address_json["street_suffix_type"] = None
-                address_json["street_name"] = " ".join(address_parts[1:])
+                # Remove directionals from street_name
+                street_name_parts = address_parts[1:]
+                street_name_clean = " ".join([p for p in street_name_parts if p.upper() not in directionals])
+                address_json["street_name"] = street_name_clean if street_name_clean else None
+
         # Try to extract pre/post directionals
         for idx, part in enumerate(address_parts):
             up = part.upper()
@@ -634,22 +645,26 @@ for input_file in input_files:
     # Supplement with seed.csv if available
     if parcel_id in seed_data:
         row = seed_data[parcel_id]
-        # Try to parse address for postal_code and plus_four_postal_code
         addr = row.get('address') or ''
-        # Example: "827 HILLCREST BLVD, WEST PALM BEACH, FL 31610, US"
         addr_parts = [a.strip() for a in addr.split(',')]
         if len(addr_parts) >= 3:
-            # Try to get postal code from the 3rd part
             state_zip = addr_parts[2].split()
             if len(state_zip) >= 2:
                 address_json["postal_code"] = state_zip[1][:5]
+            if 'state_zip' in locals() and len(state_zip) >= 3:
+                plus4 = state_zip[2]
+                if len(plus4) == 4 and plus4.isdigit():
+                    address_json["plus_four_postal_code"] = plus4
         if not address_json["city_name"] and len(addr_parts) >= 2:
             address_json["city_name"] = addr_parts[1].strip().upper()
-        # Try to get plus_four_postal_code if present
-        if len(state_zip) >= 3:
-            plus4 = state_zip[2]
-            if len(plus4) == 4 and plus4.isdigit():
-                address_json["plus_four_postal_code"] = plus4
+        # If plus_four_postal_code is still missing, try to extract from mailing address in HTML
+        if not address_json["plus_four_postal_code"]:
+            mailing = soup.find(string=re.compile(r"\d{5} \d{4}"))
+            if mailing:
+                m = re.search(r"\b(\d{5}) (\d{4})\b", mailing)
+                if m:
+                    address_json["postal_code"] = m.group(1)
+                    address_json["plus_four_postal_code"] = m.group(2)
     # Fill required fields with null if missing
     for k in ["city_name", "country_code", "county_name", "latitude", "longitude", "plus_four_postal_code", "postal_code", "state_code", "street_name", "street_post_directional_text", "street_pre_directional_text", "street_number", "street_suffix_type", "unit_identifier", "township", "range", "section", "block"]:
         if k not in address_json:
