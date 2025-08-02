@@ -657,14 +657,6 @@ for input_file in input_files:
                     address_json["plus_four_postal_code"] = plus4
         if not address_json["city_name"] and len(addr_parts) >= 2:
             address_json["city_name"] = addr_parts[1].strip().upper()
-        # If plus_four_postal_code is still missing, try to extract from mailing address in HTML
-        if not address_json["plus_four_postal_code"]:
-            mailing = soup.find(string=re.compile(r"\d{5} \d{4}"))
-            if mailing:
-                m = re.search(r"\b(\d{5}) (\d{4})\b", mailing)
-                if m:
-                    address_json["postal_code"] = m.group(1)
-                    address_json["plus_four_postal_code"] = m.group(2)
     # Fill required fields with null if missing
     for k in ["city_name", "country_code", "county_name", "latitude", "longitude", "plus_four_postal_code", "postal_code", "state_code", "street_name", "street_post_directional_text", "street_pre_directional_text", "street_number", "street_suffix_type", "unit_identifier", "township", "range", "section", "block"]:
         if k not in address_json:
