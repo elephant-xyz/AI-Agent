@@ -5,6 +5,7 @@ import json
 import logging
 import requests
 import backoff
+import argparse
 import time
 import git
 import tempfile
@@ -117,6 +118,177 @@ class WorkflowState(TypedDict):
     last_agent_activity: float
     county_data_group_cid: str
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Property Data Processing Workflow')
+    parser.add_argument(
+        '--transform',
+        action='store_true',
+        help='Run in simple mode: download scripts → run scripts → CLI validation (no AI agents)'
+    )
+    return parser.parse_args()
+
+
+async def run_simple_workflow():
+    """Simple workflow: download scripts → run scripts → CLI validation"""
+
+    logger.info("=== Starting Simple Workflow Mode ===")
+    print_status("Running in Simple Mode - No AI Agents")
+
+    # Step 1: Fetch County CID
+    logger.info("Fetching County data group CID from schema manifest...")
+    try:
+        county_data_group_cid = fetch_county_data_group_cid()
+        logger.info(f"✅ Successfully retrieved County CID: {county_data_group_cid}")
+        print_status(f"County CID retrieved: {county_data_group_cid}")
+    except (ConnectionError, ValueError, RuntimeError) as e:
+        error_msg = f"Failed to fetch County data group CID: {str(e)}"
+        logger.error(error_msg)
+        print_status(f"CRITICAL ERROR: {error_msg}")
+        raise SystemExit(f"Workflow failed: {error_msg}")
+
+    # Step 2: Download scripts from GitHub
+    logger.info("Downloading scripts from GitHub repository...")
+    print_status("Downloading scripts from GitHub...")
+    if not download_scripts_from_github():
+        logger.error("Failed to download scripts from GitHub repository")
+        print_status("ERROR: Failed to download scripts from GitHub")
+        return False
+
+    # Step 3: Load schemas (needed for validation)
+    logger.info("Loading schemas from IPFS...")
+    print_status("Loading schemas from IPFS...")
+    schemas, stub_files = load_schemas_from_ipfs(save_to_disk=True)
+    if not schemas or not stub_files:
+        logger.error("Failed to load schemas from IPFS")
+        print_status("ERROR: Failed to load schemas")
+        return False
+
+    # Step 4: Clean up directories
+    print_status("Cleaning up directories...")
+    cleanup_owners_directory()
+
+    # Step 5: Run all downloaded scripts
+    scripts_dir = os.path.join(BASE_DIR, "scripts")
+    if not os.path.exists(scripts_dir):
+        logger.error("Scripts directory not found")
+        print_status("ERROR: Scripts directory not found")
+        return False
+
+    # Find all Python scripts
+    python_scripts = [f for f in os.listdir(scripts_dir) if f.endswith('.py')]
+    if not python_scripts:
+        logger.error("No Python scripts found in scripts directory")
+        print_status("ERROR: No Python scripts found")
+        return False
+
+    logger.info(f"Found {len(python_scripts)} Python scripts to execute")
+    print_status(f"Running {len(python_scripts)} scripts...")
+
+    # Define the required execution order
+    required_script_order = [
+        "owner_processor.py",
+        "structure_extractor.py",
+        "utility_extractor.py",
+        "layout_extractor.py",
+        "data_extractor.py"
+    ]
+
+    # Check if all required scripts exist
+    missing_scripts = []
+    for script_name in required_script_order:
+        if script_name not in python_scripts:
+            missing_scripts.append(script_name)
+
+    if missing_scripts:
+        logger.error(f"Missing required scripts: {', '.join(missing_scripts)}")
+        print_status(f"ERROR: Missing scripts: {', '.join(missing_scripts)}")
+        return False
+
+    # Execute scripts in the specified order
+    for script_name in required_script_order:
+        script_path = os.path.join(scripts_dir, script_name)
+        logger.info(f"Executing script: {script_name}")
+        print_status(f"Running {script_name}...")
+
+        try:
+            result = subprocess.run(
+                [sys.executable, script_path],
+                cwd=BASE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout per script
+            )
+
+            if result.returncode == 0:
+                logger.info(f"✅ Script {script_name} completed successfully")
+                if result.stdout.strip():
+                    logger.info(f"Output: {result.stdout.strip()}")
+                print_status(f"✅ {script_name} completed")
+            else:
+                logger.error(f"❌ Script {script_name} failed with return code {result.returncode}")
+                logger.error(f"STDOUT: {result.stdout}")
+                logger.error(f"STDERR: {result.stderr}")
+                print_status(f"❌ {script_name} failed")
+                # Continue with next script instead of stopping
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"❌ Script {script_name} timed out after 5 minutes")
+            print_status(f"❌ {script_name} timed out")
+        except Exception as e:
+            logger.error(f"❌ Error running script {script_name}: {e}")
+            print_status(f"❌ Error running {script_name}")
+
+    # Run any additional scripts that weren't in the required list
+    additional_scripts = [s for s in python_scripts if s not in required_script_order]
+    if additional_scripts:
+        logger.info(f"Running {len(additional_scripts)} additional scripts...")
+        for script_name in sorted(additional_scripts):
+            script_path = os.path.join(scripts_dir, script_name)
+            logger.info(f"Executing additional script: {script_name}")
+            print_status(f"Running additional script: {script_name}...")
+
+            try:
+                result = subprocess.run(
+                    [sys.executable, script_path],
+                    cwd=BASE_DIR,
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+
+                if result.returncode == 0:
+                    logger.info(f"✅ Additional script {script_name} completed successfully")
+                    print_status(f"✅ {script_name} completed")
+                else:
+                    logger.error(f"❌ Additional script {script_name} failed")
+                    logger.error(f"STDOUT: {result.stdout}")
+                    logger.error(f"STDERR: {result.stderr}")
+                    print_status(f"❌ {script_name} failed")
+
+            except subprocess.TimeoutExpired:
+                logger.error(f"❌ Additional script {script_name} timed out")
+                print_status(f"❌ {script_name} timed out")
+            except Exception as e:
+                logger.error(f"❌ Error running additional script {script_name}: {e}")
+                print_status(f"❌ Error running {script_name}")
+
+    # Step 6: Run CLI validation
+    logger.info("Running CLI validation...")
+    print_status("Running CLI validation...")
+
+    cli_success, cli_errors, _ = run_cli_validator("data", county_data_group_cid)
+
+    if cli_success:
+        logger.info("✅ CLI validation passed successfully")
+        print_status("✅ CLI validation passed - Workflow completed successfully")
+        return True
+    else:
+        logger.error("❌ CLI validation failed")
+        logger.error(f"Errors: {cli_errors}")
+        print_status("❌ CLI validation failed")
+        print_status("Check logs for detailed error information")
+        return False
 
 def update_agent_activity(state: WorkflowState):
     """Update the last agent activity timestamp"""
@@ -2697,9 +2869,16 @@ async def run_three_node_workflow():
 
 
 async def main():
-    """Main entry point"""
+    """Main entry point with argument parsing"""
+    args = parse_arguments()
+
     try:
-        await run_three_node_workflow()
+        if args.simple:
+            success = await run_simple_workflow()
+            if not success:
+                sys.exit(1)
+        else:
+            await run_three_node_workflow()
     except Exception as e:
         logger.error(f"Processing failed: {e}")
         sys.exit(1)
