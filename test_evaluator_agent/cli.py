@@ -4,7 +4,7 @@
 import sys
 import asyncio
 import argparse
-from .main import run_main
+from .main import main as main_async
 from .setup_mcp import setup_mcp_code_executor, setup_uv_venv, check_dependencies
 
 
@@ -12,6 +12,7 @@ def main():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(description="Test Evaluator Agent")
     parser.add_argument("--setup", action="store_true", help="Setup UV venv and mcp_code_executor dependencies")
+    parser.add_argument("--transform", action="store_true", help="Run in simple mode: download scripts → run scripts → CLI validation (no AI agents)")
 
     args = parser.parse_args()
 
@@ -42,7 +43,8 @@ def main():
             sys.exit(1)
 
     try:
-        run_main()
+        # Pass the arguments to the main function
+        asyncio.run(main_async(args))
     except KeyboardInterrupt:
         print("\nOperation cancelled by user")
         sys.exit(1)
