@@ -70,6 +70,11 @@ This package is designed to be run as a standalone tool with all dependencies ma
 
 ## NOTE: in case of running the generated scripts by AI agent directly without using the AI agent, you need to run prepare_to_submit.py script to build relationships and have data ready for submission
 
+## Running Consensus diff tool:
+```
+   python3 consensus_diff.py hash1 hash2 hash3
+```
+
 # Seeding Process
 
 ## Overview
@@ -172,3 +177,6 @@ graph TD
 - Confirm token issuance has occurred
 - Verify vMahout token distribution
 - Validate final seed completion status
+
+
+
