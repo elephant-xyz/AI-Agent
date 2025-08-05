@@ -2626,8 +2626,8 @@ def download_scripts_from_github():
     if os.path.exists(seed_csv_path):
         try:
             seed_df = pd.read_csv(seed_csv_path)
-            if 'County' in seed_df.columns and len(seed_df) > 0:
-                county_name = str(seed_df['County'].iloc[0]).strip()
+            if 'county' in seed_df.columns and len(seed_df) > 0:
+                county_name = str(seed_df['county'].iloc[0]).strip()
                 logger.info(f"📍 Found county: {county_name}")
         except Exception as e:
             logger.error(f"❌ Error reading seed.csv: {e}")
@@ -2637,44 +2637,61 @@ def download_scripts_from_github():
         logger.error("❌ Could not determine county name")
         return False
 
+    # Try multiple variations of the county name
+    county_variations = [
+        county_name.lower(),  # lowercase
+        county_name,          # original case
+        county_name.title(),  # Title Case
+        county_name.upper()   # UPPERCASE
+    ]
+
     try:
-        # GitHub API URL for the counties directory
-        api_url = f"https://api.github.com/repos/elephant-xyz/AI-Agent/contents/counties/{county_name}"
+        for variation in county_variations:
+            # GitHub API URL for the counties directory
+            api_url = f"https://api.github.com/repos/elephant-xyz/AI-Agent/contents/counties/{variation}"
 
-        logger.info(f"🔄 Fetching from GitHub API: {api_url}")
+            logger.info(f"🔄 Trying county variation: '{variation}' - {api_url}")
 
-        response = requests.get(api_url, timeout=30)
+            response = requests.get(api_url, timeout=30)
 
-        if response.status_code == 404:
-            logger.error(f"❌ County directory '{county_name}' not found in repository")
-            return False
-        elif response.status_code != 200:
-            logger.error(f"❌ GitHub API request failed: {response.status_code}")
-            return False
+            if response.status_code == 404:
+                logger.warning(f"⚠️ County directory '{variation}' not found, trying next variation...")
+                continue
+            elif response.status_code != 200:
+                logger.warning(f"⚠️ GitHub API request failed for '{variation}': {response.status_code}, trying next variation...")
+                continue
 
-        files_data = response.json()
-        local_scripts_dir = os.path.join(BASE_DIR, "scripts")
-        os.makedirs(local_scripts_dir, exist_ok=True)
+            # If we get here, we found a valid directory
+            logger.info(f"✅ Found county directory: '{variation}'")
 
-        copied_files = []
+            files_data = response.json()
+            local_scripts_dir = os.path.join(BASE_DIR, "scripts")
+            os.makedirs(local_scripts_dir, exist_ok=True)
 
-        for file_info in files_data:
-            if file_info['name'].endswith('.py') and file_info['type'] == 'file':
-                # Download the file content
-                file_response = requests.get(file_info['download_url'], timeout=30)
-                if file_response.status_code == 200:
-                    file_path = os.path.join(local_scripts_dir, file_info['name'])
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(file_response.text)
-                    copied_files.append(file_info['name'])
-                    logger.info(f"📄 Downloaded: {file_info['name']}")
+            copied_files = []
 
-        if copied_files:
-            logger.info(f"✅ Downloaded {len(copied_files)} scripts from {county_name}/ directory")
-            return True
-        else:
-            logger.warning(f"⚠️ No Python scripts found in {county_name}/ directory")
-            return False
+            for file_info in files_data:
+                if file_info['name'].endswith('.py') and file_info['type'] == 'file':
+                    # Download the file content
+                    file_response = requests.get(file_info['download_url'], timeout=30)
+                    if file_response.status_code == 200:
+                        file_path = os.path.join(local_scripts_dir, file_info['name'])
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.write(file_response.text)
+                        copied_files.append(file_info['name'])
+                        logger.info(f"📄 Downloaded: {file_info['name']}")
+
+            if copied_files:
+                logger.info(f"✅ Downloaded {len(copied_files)} scripts from {variation}/ directory")
+                return True
+            else:
+                logger.warning(f"⚠️ No Python scripts found in {variation}/ directory")
+                # Continue to try other variations even if this one has no scripts
+
+        # If we've tried all variations and none worked
+        logger.error(f"❌ Could not find county directory for any variation of '{county_name}'")
+        logger.error(f"❌ Tried: {', '.join(county_variations)}")
+        return False
 
     except Exception as e:
         logger.error(f"❌ Error using GitHub API: {e}")
