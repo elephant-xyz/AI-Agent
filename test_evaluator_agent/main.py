@@ -403,39 +403,6 @@ async def run_simple_workflow():
             logger.error(f"❌ Error running script {script_name}: {e}")
             print_status(f"❌ Error running {script_name}")
 
-    # Run any additional scripts that weren't in the required list
-    additional_scripts = [s for s in python_scripts if s not in required_script_order]
-    if additional_scripts:
-        logger.info(f"Running {len(additional_scripts)} additional scripts...")
-        for script_name in sorted(additional_scripts):
-            script_path = os.path.join(scripts_dir, script_name)
-            logger.info(f"Executing additional script: {script_name}")
-            print_status(f"Running additional script: {script_name}...")
-
-            try:
-                result = subprocess.run(
-                    [sys.executable, script_path],
-                    cwd=BASE_DIR,
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
-
-                if result.returncode == 0:
-                    logger.info(f"✅ Additional script {script_name} completed successfully")
-                    print_status(f"✅ {script_name} completed")
-                else:
-                    logger.error(f"❌ Additional script {script_name} failed")
-                    logger.error(f"STDOUT: {result.stdout}")
-                    logger.error(f"STDERR: {result.stderr}")
-                    print_status(f"❌ {script_name} failed")
-
-            except subprocess.TimeoutExpired:
-                logger.error(f"❌ Additional script {script_name} timed out")
-                print_status(f"❌ {script_name} timed out")
-            except Exception as e:
-                logger.error(f"❌ Error running additional script {script_name}: {e}")
-                print_status(f"❌ Error running {script_name}")
 
     # Step 6: Run CLI validation
     logger.info("Running CLI validation...")
