@@ -279,17 +279,17 @@ for input_file in input_files:
         def safe_val(val):
             try:
                 if val is None:
-                    return 0.01
+                    return 0.0
                 v = float(val)
                 if v < 0:
-                    return 0.01
+                    return 0.0
                 # Round to 2 decimal places, and if 0, set to 0.01
                 v = round(v, 2)
                 if v == 0:
-                    return 0.01
+                    return 0.0
                 return v
             except Exception:
-                return 0.01
+                return 0.0
         # Ensure property_taxable_value_amount is a positive number with at most 2 decimal places
         taxable_val = safe_val(taxable.get(year))
         assessed_val = safe_val(assessed.get(year))
