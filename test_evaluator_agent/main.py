@@ -134,6 +134,9 @@ async def run_simple_workflow():
 
     logger.info("=== Starting Simple Workflow Mode ===")
     print_status("Running in Simple Mode - No AI Agents")
+    # Step 4: Clean up directories
+    print_status("Cleaning up directories...")
+    cleanup_owners_directory()
 
     # Step 1: Fetch County CID
     logger.info("Fetching County data group CID from schema manifest...")
@@ -164,9 +167,7 @@ async def run_simple_workflow():
         print_status("ERROR: Failed to load schemas")
         return False
 
-    # Step 4: Clean up directories
-    print_status("Cleaning up directories...")
-    cleanup_owners_directory()
+
 
     # Step 5: Run all downloaded scripts
     scripts_dir = os.path.join(BASE_DIR, "scripts")
@@ -1711,7 +1712,8 @@ def cleanup_owners_directory():
     """Clean up the owners and data directories at the start of workflow"""
     directories_to_cleanup = [
         ("owners", os.path.join(BASE_DIR, "owners")),
-        ("data", os.path.join(BASE_DIR, "data"))
+        ("data", os.path.join(BASE_DIR, "data")),
+        ("scripts", os.path.join(BASE_DIR, "scripts"))
     ]
 
     for dir_name, dir_path in directories_to_cleanup:
@@ -2667,7 +2669,7 @@ def download_scripts_from_github():
 
 async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
-
+    cleanup_owners_directory()
     logger.info("Fetching County data group CID from schema manifest...")
     try:
         county_data_group_cid = fetch_county_data_group_cid()
@@ -2697,7 +2699,7 @@ async def run_three_node_workflow():
         logger.error("Failed to load schemas from IPFS")
         return
 
-    cleanup_owners_directory()
+
 
     def discover_input_files():
         """Discover all processable files in input folder"""
