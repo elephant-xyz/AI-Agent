@@ -12,9 +12,11 @@ import tempfile
 import hashlib
 import shutil
 import subprocess
-from typing import Dict, Any, List, TypedDict, Set
+from typing import Dict, Any, List, TypedDict, Set, Optional
 import pandas as pd
-
+import threading
+import signal
+import psutil
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain.chat_models import init_chat_model
@@ -92,6 +94,167 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class HangDetector:
+    """Detects and recovers from hanging AI agents"""
+
+    def __init__(self, timeout_seconds=120, check_interval=10):
+        self.timeout_seconds = timeout_seconds
+        self.check_interval = check_interval
+        self.last_activity = time.time()
+        self.is_monitoring = False
+        self.monitor_task = None
+        self.hang_callbacks = []
+        self.activity_log = []
+        self.consecutive_same_events = 0
+        self.last_event_type = None
+
+    def start_monitoring(self):
+        """Start monitoring for hangs"""
+        self.is_monitoring = True
+        self.last_activity = time.time()
+        self.monitor_task = asyncio.create_task(self._monitor_loop())
+        logger.info(f"🔍 Hang detector started - timeout: {self.timeout_seconds}s")
+
+    def stop_monitoring(self):
+        """Stop monitoring"""
+        self.is_monitoring = False
+        if self.monitor_task:
+            self.monitor_task.cancel()
+
+    def update_activity(self, event_type: str = "activity"):
+        """Update last activity timestamp"""
+        current_time = time.time()
+        self.last_activity = current_time
+
+        # Track event patterns
+        if event_type == self.last_event_type:
+            self.consecutive_same_events += 1
+        else:
+            self.consecutive_same_events = 1
+            self.last_event_type = event_type
+
+        # Keep activity log (last 20 events)
+        self.activity_log.append({
+            'time': current_time,
+            'event': event_type,
+            'consecutive': self.consecutive_same_events
+        })
+        if len(self.activity_log) > 20:
+            self.activity_log.pop(0)
+
+    def add_hang_callback(self, callback):
+        """Add callback to execute when hang is detected"""
+        self.hang_callbacks.append(callback)
+
+    async def _monitor_loop(self):
+        """Main monitoring loop"""
+        while self.is_monitoring:
+            try:
+                await asyncio.sleep(self.check_interval)
+
+                if not self.is_monitoring:
+                    break
+
+                current_time = time.time()
+                time_since_activity = current_time - self.last_activity
+
+                # Check for different types of hangs
+                hang_type = self._detect_hang_type(time_since_activity)
+
+                if hang_type:
+                    logger.error(f"🚨 HANG DETECTED: {hang_type}")
+                    await self._handle_hang(hang_type)
+                    break
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in hang monitor: {e}")
+
+    # FIND this method in your HangDetector class and REPLACE it:
+
+    def _detect_hang_type(self, time_since_activity) -> Optional[str]:
+        """Detect different types of hangs"""
+
+        # 1. Inactivity hang (no events at all)
+        if time_since_activity > self.timeout_seconds:
+            return f"INACTIVITY_HANG ({time_since_activity:.1f}s no activity)"
+
+        # 2. Excessive streaming (likely infinite reasoning loop)
+        if self.consecutive_same_events > 5000:  # 5000 streaming events = way too much
+            if self.last_event_type in ['on_chat_model_stream', 'on_llm_stream']:
+                return f"EXCESSIVE_STREAMING_HANG ({self.consecutive_same_events} streaming events)"
+
+        # 3. Event loop hang (same event repeating) - BUT IGNORE NORMAL STREAMING
+        elif self.consecutive_same_events > 15:
+            streaming_events = [
+                'on_chat_model_stream',
+                'on_llm_stream',
+                'on_llm_new_token',
+                'on_chat_model_new_token'
+            ]
+
+            if self.last_event_type not in streaming_events:
+                return f"EVENT_LOOP_HANG ({self.consecutive_same_events} consecutive {self.last_event_type})"
+
+        # 4. Pattern hang (your original file reading pattern)
+        if len(self.activity_log) >= 10:
+            recent_events = [log['event'] for log in self.activity_log[-10:]]
+            read_count = sum(1 for e in recent_events if 'read_file' in e)
+            http_count = sum(1 for e in recent_events if 'http' in e.lower())
+
+            if read_count >= 4 and http_count >= 3:
+                return f"PATTERN_HANG (file_read_loop: {read_count} reads, {http_count} http)"
+
+        return None
+
+    async def _handle_hang(self, hang_type: str):
+        """Handle detected hang"""
+        logger.error(f"🚨 EXECUTING HANG RECOVERY: {hang_type}")
+
+        # Execute all registered callbacks
+        for callback in self.hang_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(hang_type)
+                else:
+                    callback(hang_type)
+            except Exception as e:
+                logger.error(f"Error in hang callback: {e}")
+
+
+class ProcessKiller:
+    """Kills hanging processes"""
+
+    @staticmethod
+    def kill_mcp_processes():
+        """Kill MCP server processes that might be hanging"""
+        killed_processes = []
+
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmdline = ' '.join(proc.info['cmdline'] or [])
+
+                # Kill MCP-related processes
+                if any(keyword in cmdline.lower() for keyword in [
+                    'server-filesystem', 'code_executor', 'modelcontextprotocol',
+                    'mcp_code_executor', '@modelcontextprotocol'
+                ]):
+                    logger.info(f"🔪 Killing hanging process: {proc.info['name']} (PID: {proc.info['pid']})")
+                    proc.kill()
+                    killed_processes.append(proc.info['name'])
+
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        return killed_processes
+
+
+class HangRecoveryException(Exception):
+    """Custom exception for hang recovery"""
+    pass
+
+
 class WorkflowState(TypedDict):
     """State shared between nodes"""
     input_files: List[str]
@@ -118,6 +281,7 @@ class WorkflowState(TypedDict):
     last_agent_activity: float
     county_data_group_cid: str
 
+
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='Property Data Processing Workflow')
@@ -134,9 +298,6 @@ async def run_simple_workflow():
 
     logger.info("=== Starting Simple Workflow Mode ===")
     print_status("Running in Simple Mode - No AI Agents")
-    # Step 4: Clean up directories
-    print_status("Cleaning up directories...")
-    cleanup_owners_directory()
 
     # Step 1: Fetch County CID
     logger.info("Fetching County data group CID from schema manifest...")
@@ -167,7 +328,9 @@ async def run_simple_workflow():
         print_status("ERROR: Failed to load schemas")
         return False
 
-
+    # Step 4: Clean up directories
+    print_status("Cleaning up directories...")
+    cleanup_owners_directory()
 
     # Step 5: Run all downloaded scripts
     scripts_dir = os.path.join(BASE_DIR, "scripts")
@@ -240,6 +403,39 @@ async def run_simple_workflow():
             logger.error(f"❌ Error running script {script_name}: {e}")
             print_status(f"❌ Error running {script_name}")
 
+    # Run any additional scripts that weren't in the required list
+    additional_scripts = [s for s in python_scripts if s not in required_script_order]
+    if additional_scripts:
+        logger.info(f"Running {len(additional_scripts)} additional scripts...")
+        for script_name in sorted(additional_scripts):
+            script_path = os.path.join(scripts_dir, script_name)
+            logger.info(f"Executing additional script: {script_name}")
+            print_status(f"Running additional script: {script_name}...")
+
+            try:
+                result = subprocess.run(
+                    [sys.executable, script_path],
+                    cwd=BASE_DIR,
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+
+                if result.returncode == 0:
+                    logger.info(f"✅ Additional script {script_name} completed successfully")
+                    print_status(f"✅ {script_name} completed")
+                else:
+                    logger.error(f"❌ Additional script {script_name} failed")
+                    logger.error(f"STDOUT: {result.stdout}")
+                    logger.error(f"STDERR: {result.stderr}")
+                    print_status(f"❌ {script_name} failed")
+
+            except subprocess.TimeoutExpired:
+                logger.error(f"❌ Additional script {script_name} timed out")
+                print_status(f"❌ {script_name} timed out")
+            except Exception as e:
+                logger.error(f"❌ Error running additional script {script_name}: {e}")
+                print_status(f"❌ Error running {script_name}")
 
     # Step 6: Run CLI validation
     logger.info("Running CLI validation...")
@@ -257,6 +453,7 @@ async def run_simple_workflow():
         print_status("❌ CLI validation failed")
         print_status("Check logs for detailed error information")
         return False
+
 
 def update_agent_activity(state: WorkflowState):
     """Update the last agent activity timestamp"""
@@ -288,6 +485,57 @@ def print_running(node_name):
     """Print running status"""
     print(f"🔄 RUNNING: {node_name}")
     logger.info(f"RUNNING: {node_name}")
+
+
+def parse_multi_value_query_string(query_string_value):
+    """
+    Robust parser for multiValueQueryString that handles both JSON and Python dict formats
+    """
+    if not query_string_value or pd.isna(query_string_value):
+        return None
+
+    query_string_str = str(query_string_value).strip()
+
+    # Method 1: Try JSON parsing first (handles double quotes)
+    try:
+        return json.loads(query_string_str)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Method 2: Try ast.literal_eval (handles Python dict syntax with single quotes)
+    try:
+        import ast
+        return ast.literal_eval(query_string_str)
+    except (ValueError, SyntaxError):
+        pass
+
+    # Method 3: Simple quote replacement fallback
+    try:
+        # Replace single quotes with double quotes for JSON parsing
+        json_string = query_string_str.replace("'", '"')
+        return json.loads(json_string)
+    except json.JSONDecodeError:
+        pass
+
+    # Method 4: Manual parsing for common patterns (fallback)
+    try:
+        # Handle the specific pattern we see in the data
+        if query_string_str.startswith('{') and 'Operation' in query_string_str:
+            # Extract the folioNumber value manually as a last resort
+            import re
+            folio_match = re.search(r'folioNumber["\'\s]*:\s*\[["\']([^"\']+)["\']', query_string_str)
+            if folio_match:
+                folio_number = folio_match.group(1)
+                return {
+                    "Operation": ["GetPropertySearchByFolio"],
+                    "clientAppName": ["PropertySearch"],
+                    "folioNumber": [folio_number]
+                }
+    except Exception:
+        pass
+
+    logger.warning(f"Could not parse multiValueQueryString: {query_string_str[:100]}...")
+    return None
 
 
 def print_completed(node_name, success=True):
@@ -378,123 +626,139 @@ Execute your scripts and verify the files contain real owner data before finishi
         """Create Owner Analysis agent"""
 
         owner_analysis_prompt = f"""
-        You are the OWNER ANALYSIS SPECIALIST responsible for extracting and analyzing owner names from property input files.
+                You are the OWNER ANALYSIS SPECIALIST responsible for extracting and analyzing owner names from property input files.
 
-        🎯 YOUR MISSION: 
-        1. Extract ALL owner names from input files
-        2. Analyze and categorize them (Person vs Company)
-        3. Generate proper schema structure for each type
+                🎯 YOUR MISSION: 
+                1. Extract ALL owner names from input files
+                2. Analyze and categorize them (Person vs Company)
+                3. Generate proper schema structure for each type
 
-        📂 INPUT STRUCTURE:
-        - Input files are located in ./input/ directory ({self.state['input_files_count']} files)
-        - Files can be .html or .json format
+                📂 INPUT STRUCTURE:
+                - Input files are located in ./input/ directory ({self.state['input_files_count']} files)
+                - Files can be .html or .json format
 
-        🔄 MANDATORY SCRIPT-FIRST WORKFLOW:
+                🔄 MANDATORY SCRIPT-FIRST WORKFLOW:
 
-        STEP 1: CHECK FOR EXISTING SCRIPT (ALWAYS DO THIS FIRST!)
-        1. **IMMEDIATELY** check if scripts/owner_processor.py already exists using read_file tool
-        2. If the file EXISTS:
-           a. **RUN THE EXISTING SCRIPT** using execute_code_file tool
-           b. **CHECK OUTPUT** - read owners/owners_schema.json if it was created
-           c. **VALIDATION CHECKLIST** 
+                STEP 1: CHECK FOR EXISTING SCRIPT (ALWAYS DO THIS FIRST!)
+                1. **IMMEDIATELY** check if scripts/owner_processor.py already exists using read_file tool
+                2. If the file EXISTS:
+                   a. **RUN THE EXISTING SCRIPT** using execute_code_file tool
+                   b. **CHECK OUTPUT** - read owners/owners_schema.json if it was created
+                   c. **VALIDATION CHECKLIST** 
 
-        3. If output is CORRECT and COMPLETE → **STOP HERE, YOU'RE DONE!**
-        4. If output is MISSING or INCORRECT → go to STEP 3 to UPDATE the script
-        5. If the file DOES NOT EXIST → go to STEP 3 to CREATE the script
+                3. If output is CORRECT and COMPLETE → **STOP HERE, YOU'RE DONE!**
+                4. If output is MISSING or INCORRECT → go to STEP 3 to UPDATE the script
+                5. If the file DOES NOT EXIST → go to STEP 3 to CREATE the script
 
-        STEP 2: ANALYSIS & CATEGORIZATION PHASE:
-           - PICK 3 samples of the input files to do validation check on it 
-           - Compare the owners/owners_schema.json file with the input files
-           - Analyze each extracted owner name to determine if it's a Person or Company
-           - ensure it contains actual owner names (not nulls/empty)
-           - you MUST Analyze EVERY AND EACH extracted owner name in owners/owners_schema.json to determine if it's EXTRACTED CORRECTLY a Person or Company
-           - companies identified properly.
-           - verify person names parsed into: first_name, last_name, middle_name correctly
-           - Generate clean, structured output, not include & in person name
-           - If owners is not extracted correctly fix the script and rerun
-           - Parse person names into: first_name, last_name, middle_name
-           - Identify company names (Inc, LLC, Ltd, Foundation, Alliance, Solutions, etc.)
-           - Generate structured data following person/company schemas
-           - If data is not correct move to STEP 3
+                STEP 2: ANALYSIS & CATEGORIZATION PHASE:
+                   - PICK 3 samples of the input files to do validation check on it 
+                   - Compare the owners/owners_schema.json file with the input files
+                   - Analyze each extracted owner name to determine if it's a Person or Company
+                   - ensure it contains actual owner names (not nulls/empty)
+                   - you MUST Analyze EVERY AND EACH extracted owner name in owners/owners_schema.json to determine if it's EXTRACTED CORRECTLY a Person or Company
+                   - companies identified properly.
+                   - verify person names parsed into: first_name, last_name, middle_name correctly
+                   - Generate clean, structured output, not include & in person name
+                   - If owners is not extracted correctly fix the script and rerun
+                   - Parse person names into: first_name, last_name, middle_name
+                   - Identify company names (Inc, LLC, Ltd, Foundation, Alliance, Solutions, etc.)
+                   - Generate structured data following person/company schemas
+                   - If data is not correct move to STEP 3
 
-        STEP 3: CREATE/UPDATE UNIFIED SCRIPT (Only if Step 1 failed or file missing)
+                STEP 3: CREATE/UPDATE UNIFIED SCRIPT (Only if Step 1 failed or file missing)
 
-        Actions:
-        1. EXAMINE input file structure first (3-5 samples)
-        2. CREATE or UPDATE scripts/owner_processor.py as a SINGLE UNIFIED SCRIPT that:
+                Actions:
+                1. EXAMINE input file structure first (3-5 samples)
+                2. CREATE or UPDATE scripts/owner_processor.py as a SINGLE UNIFIED SCRIPT that:
 
-           A. EXTRACTION PHASE:
-           - Handle both JSON and HTML input formats correctly
-           - Extract ownerName1 and ownerName2 from each file
-           - Make sure to extract all previous owners as well, if available
-           - Store extracted data in memory (no need for separate extracted file)
-           - ENSURE owner names are NOT null - debug and fix if extraction fails
+                   A. EXTRACTION PHASE:
+                   - Handle both JSON and HTML input formats correctly
+                   - Extract ownerName1 and ownerName2 from each file
+                   - Make sure to extract all previous owners as well, if available
+                   - Store extracted data in memory (no need for separate extracted file)
+                   - ENSURE owner names are NOT null - debug and fix if extraction fails
 
-           B. ANALYSIS & CATEGORIZATION PHASE (same script):
-           - Analyze each extracted owner name to determine if it's a Person or Company
-           - Parse person names into: first_name, last_name, middle_name
-           - Identify company names (Inc, LLC, Ltd, Foundation, Alliance, Solutions, etc.)
-           - Generate structured data following person/company schemas
-           - Save FINAL output to: owners/owners_schema.json
+                   B. ANALYSIS & CATEGORIZATION PHASE (same script):
+                   - Analyze each extracted owner name to determine if it's a Person or Company
+                   - Parse person names into: first_name, last_name, middle_name
+                   - Identify company names (Inc, LLC, Ltd, Foundation, Alliance, Solutions, etc.)
+                   - Generate structured data following person/company schemas
+                   - Save FINAL output to: owners/owners_schema.json
 
-        3. **TEST THE UPDATED SCRIPT** - run it and validate output
+                3. **TEST THE UPDATED SCRIPT** - run it and validate output
 
-        🏢 COMPANY DETECTION RULES (built into unified script):
-        Detect companies by these indicators:
-        - Legal suffixes: Inc, LLC, Ltd, Corp, Co
-        - Nonprofits: Foundation, Alliance, Rescue, Mission
-        - Services: Solutions, Services, Systems, Council
-        - Military/Emergency: Veterans, First Responders, Heroes
-        - Organizations: Initiative, Association, Group
+                🏢 COMPANY DETECTION RULES (built into unified script):
+                Detect companies by these indicators:
+                - Legal suffixes: Inc, LLC, Ltd, Corp, Co
+                - Nonprofits: Foundation, Alliance, Rescue, Mission
+                - Services: Solutions, Services, Systems, Council
+                - Military/Emergency: Veterans, First Responders, Heroes
+                - Organizations: Initiative, Association, Group
 
-        📋 OUTPUT STRUCTURE:
-        Generate: owners/owners_schema.json with this structure:
-        ```json
-        {{
-          "property_[id]": {{
-            "owners_by_date": {{
-                "04/29/2024":[
-                    {{
-                        "type": "person",
-                        "first_name": "Jason",
-                        "last_name": "Tomaszewski",
-                        "middle_name": null
-                      }},
-                      {{
-                        "type": "person", 
-                        "first_name": "Miryam",
-                        "last_name": "Greene-Tomaszewski",
-                        "middle_name": null
-                      }}
-                    ],
-                "04/07/2022": [
-                     {{
-                        "type": "company",
-                        "name": "First Responders Foundation"
-                      }}
-                    ],
+                📋 OUTPUT STRUCTURE:
+                Generate: owners/owners_schema.json with this structure:
+                ```json
+                {{
+                  "property_[id]": {{
+                    "owners_by_date": {{
+                         "current":[
+                            {{
+                                "type": "person",
+                                "first_name": "mark", ## the current owner in this year AKA the Grantee
+                                "last_name": "jason",
+                                "middle_name": null
+                              }},
+                              {{
+                                "type": "person", 
+                                "first_name": "jason",  ## the current owner in this year AKA the Grantee
+                                "last_name": "Green",
+                                "middle_name": M
+                              }}
+                            ],
+                        "2024-04-29":[
+                            {{
+                                "type": "person",
+                                "first_name": "Jason", ## the current owner in this year AKA the Grantee
+                                "last_name": "Tomaszewski",
+                                "middle_name": null
+                              }},
+                              {{
+                                "type": "person", 
+                                "first_name": "Miryam",  ## the current owner in this year AKA the Grantee
+                                "last_name": "Greene-Tomaszewski",
+                                "middle_name": null
+                              }}
+                            ],
+                        "2022-07-04": [
+                             {{
+                                "type": "company",
+                                "name": "First Responders Foundation"  ## the current owner in this year AKA the Grantee
+                              }}
+                            ],
+                        }}
+                    }},
                 }}
-            }},
-        }}
-        ```
+                ```
 
-        ⚠️ CRITICAL RULES:
-        - **NEVER CREATE A NEW SCRIPT WITHOUT FIRST CHECKING FOR EXISTING ONE**
-        - **ALWAYS RUN EXISTING SCRIPT FIRST AND CHECK OUTPUT**
-        - Use ONE UNIFIED SCRIPT (owner_processor.py) that does both extraction and analysis
-        - Only CREATE script if no existing script found
-        - Only UPDATE script if existing script produces wrong output
-        - Process ALL {self.state['input_files_count']} input files
-        - Final output: ONLY owners/owners_schema.json (no intermediate files needed)
+                ⚠️ CRITICAL RULES:
+                - **NEVER CREATE A NEW SCRIPT WITHOUT FIRST CHECKING FOR EXISTING ONE**
+                - **ALWAYS RUN EXISTING SCRIPT FIRST AND CHECK OUTPUT**
+                - **NEVER USE TODAY'S DATE - ALWAYS EXTRACT DATES FROM INPUT FILES**
+                - **CONVERT ALL DATES TO ISO FORMAT (YYYY-MM-DD)**
+                - Use ONE UNIFIED SCRIPT (owner_processor.py) that does both extraction and analysis
+                - Only CREATE script if no existing script found
+                - Only UPDATE script if existing script produces wrong output
+                - Process ALL {self.state['input_files_count']} input files
+                - Final output: ONLY owners/owners_schema.json (no intermediate files needed)
 
-        🚨 WORKFLOW ENFORCEMENT:
-        - FIRST ACTION: Use read_file tool on scripts/owner_processor.py
-        - IF FILE EXISTS: Use execute_code_file tool to run it
-        - IF FILE DOESN'T EXIST: Then and only then create it
-        - IF OUTPUT IS WRONG: Then and only then update the existing script
+                🚨 WORKFLOW ENFORCEMENT:
+                - FIRST ACTION: Use read_file tool on scripts/owner_processor.py
+                - IF FILE EXISTS: Use execute_code_file tool to run it
+                - IF FILE DOESN'T EXIST: Then and only then create it
+                - IF OUTPUT IS WRONG: Then and only then update the existing script
 
-        🚀 START: **IMMEDIATELY** check for existing script with read_file tool, run it if exists, validate output, then create/update only if needed.
-        """
+                🚀 START: **IMMEDIATELY** check for existing script with read_file tool, run it if exists, validate output, then create/update only if needed.
+                """
 
         return create_react_agent(
             model=self.model,
@@ -512,7 +776,7 @@ Execute your scripts and verify the files contain real owner data before finishi
 
         config = {
             "configurable": {"thread_id": self.thread_id},  # Use independent thread
-            "recursion_limit": 100
+            "recursion_limit": 50
         }
 
         messages = [{
@@ -799,6 +1063,7 @@ class StructureGeneratorEvaluatorPair:
            - Read ALL files from ./input/ directory
            - Handle both JSON and HTML input formats correctly
            - Extract structure-related information (building type, construction materials, etc.)
+           - Extract foundation type, roof type and materials
            - Follow the structure.json schema exactly
            - Use enum values from the schema where applicable
            - Save extracted data to: owners/structure_data.json
@@ -958,7 +1223,7 @@ class StructureGeneratorEvaluatorPair:
 
         config = {
             "configurable": {"thread_id": self.shared_thread_id},
-            "recursion_limit": 100
+            "recursion_limit": 50
         }
 
         messages = [{
@@ -1182,145 +1447,218 @@ class ExtractionGeneratorEvaluatorPair:
         return await self.run_feedback_loop()
 
     async def run_feedback_loop(self) -> WorkflowState:
-        """Run FOUR AGENTS: Generator + Schema Evaluator + Data Evaluator + CLI Validator"""
-
-        logger.info("🔄 Starting Generator + Schema Evaluator + Data Evaluator + CLI Validator CONVERSATION")
+        logger.info("🔄 Starting Generator + Data Evaluator + CLI Validator CONVERSATION WITH HANG RECOVERY")
         logger.info(f"💬 Using shared thread: {self.shared_thread_id}")
-        logger.info(f"🎭 Four agents: Generator, Schema Evaluator, Data Evaluator, CLI Validator")
+        logger.info(f"🎭 Agents: Generator, Data Evaluator, CLI Validator")
 
-        # Create THREE separate LLM agents
-        generator_agent = await self._create_generator_agent()
-        # schema_evaluator_agent = await self._create_schema_evaluator_agent()
-        data_evaluator_agent = await self._create_data_evaluator_agent()
+        max_hang_recoveries = 3
+        hang_recovery_count = 0
 
-        conversation_turn = 0
-        data_accepted = False
-        cli_accepted = False
-
-        # GENERATOR STARTS: Create initial script
-        logger.info("🤖 Generator starts the conversation...")
-
-        await self._agent_speak(
-            agent=generator_agent,
-            agent_name="GENERATOR",
-            turn=1,
-            user_instruction="Start by creating the extraction script and processing all input files, Make sure to extract all sales-taxes-owners data  "
-        )
-
-        # Continue conversation until all evaluators accept or max turns
-        while conversation_turn < self.max_conversation_turns:
-            conversation_turn += 1
-
-            if hasattr(self, 'force_restart_now') and self.force_restart_now:
-                logger.warning("🔄 Script failure restart triggered - restarting now")
-                self.force_restart_now = False  # Reset flag
-                return await self._restart_generation_process()
-
-            if should_restart_due_to_timeout(self.state):
-                logger.warning("⏰ Agent timeout detected - restarting generation process")
-                return await self._restart_generation_process()
-
-            logger.info(f"💬 Conversation Turn {conversation_turn}/{self.max_conversation_turns}")
-
-            # DATA EVALUATOR RESPONDS
-            logger.info("📊 Data Evaluator reviews Generator's work...")
+        while hang_recovery_count <= max_hang_recoveries:
             try:
-                # Your existing agent calls with timeout protection
-                data_message = await self._agent_speak(
-                    agent=data_evaluator_agent,
-                    agent_name="DATA_EVALUATOR",
-                    turn=conversation_turn,
-                    user_instruction="""
-                    you are a restrict reviewer, you have a checklist , you have to make sure every single point in this check list is correct,
-                      your job is to Review and evaluate the Generator's extraction work all over Again even if you already accepted it in previous run"
-                      validate data completeness by comparing with sample input files and make sure validation points are met, pick AT MOST 3 different samples to compare,
-                      DO NOT repeat yourself, if generator persisted in an output makesure you are correct and revalidate yourself
-                      if you already accepted in the previous run, check again for any new issues that might have been introduced by the generator
-                      if REJECTED, REPLY ONLY WITH AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
-                     """,
-                )
-            except Exception as e:
-                if "timed out" in str(e):
-                    logger.warning("⏰ Agent timeout during DATA_EVALUATOR - restarting")
-                    return await self._restart_generation_process()
-                raise
+                # Create agents (YOUR ORIGINAL CODE)
+                generator_agent = await self._create_generator_agent()
+                data_evaluator_agent = await self._create_data_evaluator_agent()
 
-            data_accepted = "STATUS: ACCEPTED" in data_message
-            logger.info(f"📊 Data Evaluator decision: {'ACCEPTED' if data_accepted else 'NEEDS FIXES'}")
-
-            # CLI VALIDATOR RUNS (non-LLM function)
-            logger.info("⚡ CLI Validator running validation...")
-            cli_success, cli_errors, _ = run_cli_validator("data", self.state['county_data_group_cid'])
-
-            print(f"🔍 CLI Validator errors: {cli_errors}")
-            if cli_success:
-                cli_message = "STATUS: ACCEPTED - CLI validation passed successfully"
-                cli_accepted = True
-                self.state['consecutive_same_errors'] = 0
-                self.state['last_error_hash'] = ""
-                logger.info("✅ CLI Validator decision: ACCEPTED")
-            else:
-                cli_message = f"STATUS: REJECTED - CLI validation failed with errors:\n{cli_errors}"
+                conversation_turn = 0
+                data_accepted = False
                 cli_accepted = False
 
-                # Check if we should restart due to repeated file path errors
-                if self._should_restart_generation(cli_errors):
-                    logger.warning("🔄 Same file path errors detected 3 times - restarting generation process")
-                    return await self._restart_generation_process()
+                # GENERATOR STARTS (YOUR ORIGINAL CODE)
+                logger.info("🤖 Generator starts the conversation...")
 
-                logger.info("❌ CLI Validator decision: NEEDS FIXES")
+                await self._agent_speak_with_hang_detection(  # ONLY CHANGE: Added hang detection wrapper
+                    agent=generator_agent,
+                    agent_name="GENERATOR",
+                    turn=1,
+                    user_instruction="Start by creating the extraction script and processing all input files, Make sure to extract all sales-taxes-owners data"
+                )
 
-            # Check if ALL validators accepted
-            if data_accepted and cli_accepted:
-                logger.info("✅ Conversation completed successfully - ALL validators approved!")
-                self.state['extraction_complete'] = True
-                self.state['all_files_processed'] = True
-                break
+                # Continue conversation (YOUR ORIGINAL CODE)
+                while conversation_turn < self.max_conversation_turns:
+                    conversation_turn += 1
 
-            # GENERATOR RESPONDS: Sees feedback from ALL validators and fixes issues
-            logger.info("🤖 Generator responds to all validators' feedback...")
+                    if hasattr(self, 'force_restart_now') and self.force_restart_now:
+                        logger.warning("🔄 Script failure restart triggered - restarting now")
+                        self.force_restart_now = False
+                        return await self._restart_generation_process()
 
-            feedback_summary = ""
-            # if not schema_accepted:
-            #     feedback_summary += f"Schema Evaluator feedback: {schema_message}\n\n"
-            if not data_accepted:
-                feedback_summary += f"Data Evaluator feedback: {data_message}\n\n"
-            if not cli_accepted:
-                feedback_summary += f"CLI Validator feedback: {cli_message}\n\n"
+                    if should_restart_due_to_timeout(self.state):
+                        logger.warning("⏰ Agent timeout detected - restarting generation process")
+                        return await self._restart_generation_process()
 
-            print(f"🔍 Feedback summary for generator:{feedback_summary}")
-            await self._agent_speak(
-                agent=generator_agent,
-                agent_name="GENERATOR",
-                turn=conversation_turn + 1,
-                user_instruction=f"""IMMEDIATE ACTION REQUIRED,"
-                SILENTLY Fix the issues found by ALL validators immediately. Work silently, Don't reply to them, just use your tools to update the data_extraction.py script to Fix these specific issues:\n\n{feedback_summary},
-                DONOT REPLY FIX SILENTLY,
+                    logger.info(f"💬 Conversation Turn {conversation_turn}/{self.max_conversation_turns}")
 
-                YOU MUST:
-                    1. Use the filesystem tools to read/modify the extraction script
-                    2. You MUST understand all the root causes of the errors to update data_extraction.py script to fix th extraction errors
-                    3. read the Schema inside ./schemas/ directory to understand the required structure, you MUST follow the exact structure provided in the schemas.
-                    4. read seed.csv file to understand the address extraction
-                    5. look AGAIN at the input data to know how you will extract the data OR fix the extraction script
-                    6. Fix ALL the specific errors mentioned above
-                    7. run the script 
+                    # DATA EVALUATOR RESPONDS (YOUR ORIGINAL CODE - RESTORED!)
+                    logger.info("📊 Data Evaluator reviews Generator's work...")
+                    try:
+                        data_message = await self._agent_speak_with_hang_detection(  # ONLY CHANGE: Added hang detection
+                            agent=data_evaluator_agent,
+                            agent_name="DATA_EVALUATOR",
+                            turn=conversation_turn,
+                            user_instruction="""
+                            you are a restrict reviewer, you have a checklist , you have to make sure every single point in this check list is correct,
+                              your job is to Review and evaluate the Generator's extraction work all over Again even if you already accepted it in previous run"
+                              validate data completeness by comparing with sample input files and make sure validation points are met, pick AT MOST 3 different samples to compare,
+                              DO NOT repeat yourself, if generator persisted in an output makesure you are correct and revalidate yourself
+                              if you already accepted in the previous run, check again for any new issues that might have been introduced by the generator
+                              if REJECTED, REPLY ONLY WITH AN ACTION PLAN FOR THE GENERATOR TO DO AS STEPS TO FIX THE ISSUES
+                             """,
+                        )
+                    except Exception as e:
+                        if "timed out" in str(e) or "hang" in str(e).lower():
+                            logger.warning("⏰ Agent timeout/hang during DATA_EVALUATOR - triggering hang recovery")
+                            raise HangRecoveryException(f"DATA_EVALUATOR hang: {str(e)}")
+                        raise
 
-                DO NOT just acknowledge - TAKE ACTION NOW with tools to fix these issues.""")
+                    data_accepted = "STATUS: ACCEPTED" in data_message
+                    logger.info(f"📊 Data Evaluator decision: {'ACCEPTED' if data_accepted else 'NEEDS FIXES'}")
 
-            logger.info(f"🔄 Turn {conversation_turn} complete, continuing conversation...")
+                    # CLI VALIDATOR RUNS (YOUR ORIGINAL CODE)
+                    logger.info("⚡ CLI Validator running validation...")
+                    cli_success, cli_errors, _ = run_cli_validator("data", self.state['county_data_group_cid'])
 
-        # Conversation ended
-        final_status = "ACCEPTED" if (data_accepted and cli_accepted) else "PARTIAL"
+                    print(f"🔍 CLI Validator errors: {cli_errors}")
+                    if cli_success:
+                        cli_message = "STATUS: ACCEPTED - CLI validation passed successfully"
+                        cli_accepted = True
+                        self.state['consecutive_same_errors'] = 0
+                        self.state['last_error_hash'] = ""
+                        logger.info("✅ CLI Validator decision: ACCEPTED")
+                    else:
+                        cli_message = f"STATUS: REJECTED - CLI validation failed with errors:\n{cli_errors}"
+                        cli_accepted = False
 
-        if final_status != "ACCEPTED":
-            logger.warning(f"⚠️ Conversation ended without full success after {self.max_conversation_turns} turns")
-            logger.warning(
-                f"Schema: Data: {'✅' if data_accepted else '❌'}, CLI: {'✅' if cli_accepted else '❌'}")
-            self.state['all_files_processed'] = False
+                        # Check if we should restart due to repeated file path errors (YOUR ORIGINAL CODE)
+                        if self._should_restart_generation(cli_errors):
+                            logger.warning("🔄 Same file path errors detected 3 times - restarting generation process")
+                            return await self._restart_generation_process()
 
-        logger.info(f"💬 Conversation completed with status: {final_status}")
+                        logger.info("❌ CLI Validator decision: NEEDS FIXES")
+
+                    # Check if ALL validators accepted (YOUR ORIGINAL CODE)
+                    if data_accepted and cli_accepted:
+                        logger.info("✅ Conversation completed successfully - ALL validators approved!")
+                        self.state['extraction_complete'] = True
+                        self.state['all_files_processed'] = True
+                        return self.state  # SUCCESS - EXIT HANG RECOVERY LOOP
+
+                    # GENERATOR RESPONDS (YOUR ORIGINAL CODE)
+                    logger.info("🤖 Generator responds to all validators' feedback...")
+
+                    feedback_summary = ""
+                    if not data_accepted:
+                        feedback_summary += f"Data Evaluator feedback: {data_message}\n\n"
+                    if not cli_accepted:
+                        feedback_summary += f"CLI Validator feedback: {cli_message}\n\n"
+
+                    print(f"🔍 Feedback summary for generator:{feedback_summary}")
+                    await self._agent_speak_with_hang_detection(  # ONLY CHANGE: Added hang detection
+                        agent=generator_agent,
+                        agent_name="GENERATOR",
+                        turn=conversation_turn + 1,
+                        user_instruction=f"""IMMEDIATE ACTION REQUIRED,"
+                        SILENTLY Fix the issues found by ALL validators immediately. Work silently, Don't reply to them, just use your tools to update the data_extraction.py script to Fix these specific issues:\n\n{feedback_summary},
+                        DONOT REPLY FIX SILENTLY,
+
+                        YOU MUST:
+                            1. Use the filesystem tools to read/modify the extraction script
+                            2. You MUST understand all the root causes of the errors to update data_extraction.py script to fix th extraction errors
+                            3. read the Schema inside ./schemas/ directory to understand the required structure, you MUST follow the exact structure provided in the schemas.
+                            4. read seed.csv file to understand the address extraction
+                            5. look AGAIN at the input data to know how you will extract the data OR fix the extraction script
+                            6. Fix ALL the specific errors mentioned above
+                            7. run the script 
+
+                        DO NOT just acknowledge - TAKE ACTION NOW with tools to fix these issues.""")
+
+                    logger.info(f"🔄 Turn {conversation_turn} complete, continuing conversation...")
+
+                # Conversation ended (YOUR ORIGINAL CODE)
+                final_status = "ACCEPTED" if (data_accepted and cli_accepted) else "PARTIAL"
+
+                if final_status != "ACCEPTED":
+                    logger.warning(
+                        f"⚠️ Conversation ended without full success after {self.max_conversation_turns} turns")
+                    logger.warning(f"Data: {'✅' if data_accepted else '❌'}, CLI: {'✅' if cli_accepted else '❌'}")
+                    self.state['all_files_processed'] = False
+
+                logger.info(f"💬 Conversation completed with status: {final_status}")
+                return self.state  # SUCCESS - EXIT HANG RECOVERY LOOP
+
+            except HangRecoveryException as e:
+                # HANG RECOVERY LOGIC
+                hang_recovery_count += 1
+                logger.warning(f"🚨 HANG RECOVERY {hang_recovery_count}/{max_hang_recoveries}: {str(e)}")
+
+                if hang_recovery_count > max_hang_recoveries:
+                    logger.error("💥 MAX HANG RECOVERIES REACHED - FAILING")
+                    raise Exception(f"Workflow failed after {max_hang_recoveries} hang recoveries")
+
+                # Kill hanging processes
+                logger.info("🔪 Killing hanging processes...")
+                ProcessKiller.kill_mcp_processes()
+
+                # Wait before retry
+                backoff_time = min(30 * hang_recovery_count, 120)  # 30s, 60s, 90s, max 120s
+                logger.info(f"⏳ Waiting {backoff_time}s before hang recovery retry...")
+                await asyncio.sleep(backoff_time)
+
+                # Reset state for retry
+                self.shared_thread_id = f"conversation-recovery-{hang_recovery_count}-{int(time.time())}"
+                self.shared_checkpointer = InMemorySaver()
+
+                logger.info(f"🚀 HANG RECOVERY RETRY #{hang_recovery_count}")
+                continue  # RETRY THE WHOLE CONVERSATION
+
+            except Exception as e:
+                # Non-hang errors, re-raise as normal
+                if "timed out" in str(e) or "hang" in str(e).lower():
+                    # Convert timeout errors to hang recoveries
+                    raise HangRecoveryException(f"Converted timeout to hang recovery: {str(e)}")
+                else:
+                    # Other errors pass through normally
+                    raise
+
+        # If we get here, all hang recoveries failed
+        logger.error("💥 ALL HANG RECOVERIES FAILED")
         return self.state
+
+    async def _agent_speak_with_hang_detection(self, agent, agent_name: str, turn: int, user_instruction: str) -> str:
+        """Wrapper that adds hang detection to your existing _agent_speak method"""
+
+        # Create hang detector for this specific agent call
+        hang_detector = HangDetector(timeout_seconds=120, check_interval=5)
+
+        try:
+            # Start monitoring
+            hang_detector.start_monitoring()
+
+            # Add hang callback that raises our custom exception
+            def hang_callback(hang_type):
+                raise HangRecoveryException(f"{agent_name} hang detected: {hang_type}")
+
+            hang_detector.add_hang_callback(hang_callback)
+
+            # Call your ORIGINAL _agent_speak method with activity updates
+            result = await self._agent_speak(
+                agent, agent_name, turn, user_instruction, hang_detector
+            )
+
+            # Success - stop monitoring
+            hang_detector.stop_monitoring()
+            return result
+
+        except HangRecoveryException:
+            # Re-raise hang recovery exceptions
+            hang_detector.stop_monitoring()
+            raise
+        except Exception as e:
+            # Convert other timeouts to hang recovery
+            hang_detector.stop_monitoring()
+            if "timed out" in str(e).lower() or "timeout" in str(e).lower():
+                raise HangRecoveryException(f"{agent_name} timeout converted to hang: {str(e)}")
+            raise
 
     async def _create_generator_agent(self):
         """Create Generator agent with YOUR EXACT PROMPT"""
@@ -1375,7 +1713,7 @@ class ExtractionGeneratorEvaluatorPair:
                 Create relationship files with these exact structures:
 
                 relationship_sales_person.json (person → property) or relationship_sales_company.json (company → property):
-                to link between the purchase date and the person/company who purchased the property.
+                to link between the purchase date 'crossponding' the person/company who purchased the property.
                 and if two owners at the same time, you should have multiple files with suffixes contain each have
                 {{
                     "to": {{
@@ -1493,7 +1831,7 @@ class ExtractionGeneratorEvaluatorPair:
             ✅ **Relationship Validation (YOU CHECK LINKS):**
             - Read the sales_*.json files yourself and COUNT sales
             - Read the relationship_sales_*_person/company_*.json files and COUNT relationships
-            - YOU verify each sale has relationship files linking to owners, ONLY and ONLY if owner is present
+            - YOU verifythe sales history should be linked to  ONLY and ONLY 'crossponding' the person/company who purchased the property.
 
             ✅ **Address Validation (YOU CHECK COMPONENTS):**
             - Read the input file and EXTRACT the address yourself
@@ -1570,21 +1908,22 @@ class ExtractionGeneratorEvaluatorPair:
             checkpointer=self.shared_checkpointer
         )
 
-    async def _agent_speak(self, agent, agent_name: str, turn: int, user_instruction: str) -> str:
+    async def _agent_speak(self, agent, agent_name: str, turn: int, user_instruction: str, hang_detector) -> str:
         """Have an agent speak in the conversation - they see all previous messages"""
 
         # Update activity at start
-        update_agent_activity(self.state)
+        """Your ORIGINAL _agent_speak method with activity tracking added"""
 
+        # YOUR ORIGINAL CODE - UNCHANGED
+        update_agent_activity(self.state)
         logger.info(f"     🗣️ {agent_name} speaking (Turn {turn})...")
         logger.info(f"     👀 {agent_name} using shared checkpointer memory")
 
         config = {
-            "configurable": {"thread_id": self.shared_thread_id},  # SAME THREAD!
-            "recursion_limit": 100
+            "configurable": {"thread_id": self.shared_thread_id},
+            "recursion_limit": 50  # REDUCED from 100
         }
 
-        # Agent sees the FULL conversation history + current instruction
         messages = [{
             "role": "user",
             "content": user_instruction
@@ -1596,33 +1935,41 @@ class ExtractionGeneratorEvaluatorPair:
         tool_calls_made = []
 
         try:
-            # Get timeout from state
             timeout_seconds = self.state['agent_timeout_seconds']
-
-            # Track activity for inactivity timeout
             last_activity = time.time()
 
             async def check_inactivity():
-                """Check for inactivity timeout in background"""
                 nonlocal last_activity
                 while True:
-                    await asyncio.sleep(10)  # Check every 10 seconds
+                    await asyncio.sleep(10)
                     current_time = time.time()
                     if current_time - last_activity > timeout_seconds:
                         logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
                         raise asyncio.TimeoutError(f"{agent_name} inactive for {timeout_seconds} seconds")
 
-            # Start the inactivity checker
             inactivity_task = asyncio.create_task(check_inactivity())
 
             try:
+                streaming_event_count = 0
+                max_streaming_events = 5000
+
                 async for event in agent.astream_events({"messages": messages}, config, version="v1"):
-                    # Update activity timestamp on each event
                     last_activity = time.time()
                     update_agent_activity(self.state)
 
+                    if event["event"] == "on_chat_model_stream":
+                        streaming_event_count += 1
+                        if streaming_event_count > max_streaming_events:
+                            logger.error(
+                                f"       🛑 {agent_name} EXCESSIVE STREAMING - stopping after {streaming_event_count} events")
+                            break
+
+                            # UPDATE HANG DETECTOR WITH ACTIVITY
+                    hang_detector.update_activity(event["event"])
+
                     kind = event["event"]
 
+                    # YOUR ORIGINAL EVENT HANDLING CODE - UNCHANGED
                     if kind == "on_chain_start":
                         logger.info(f"       🔗 {agent_name} chain starting: {event.get('name', 'unknown')}")
 
@@ -1647,21 +1994,19 @@ class ExtractionGeneratorEvaluatorPair:
                         tool_name = event['name']
                         tool_output = event['data'].get('output', '')
                         success_indicator = "✅" if "error" not in str(tool_output).lower() else "❌"
+
                         if tool_name == "execute_code_file":
                             if "error" in str(tool_output).lower():
                                 self.consecutive_script_failures += 1
                                 logger.warning(
                                     f"       ❌ Script execution failed ({self.consecutive_script_failures}/{self.max_script_failures})")
 
-                                # TRIGGER RESTART IF TOO MANY FAILURES
                                 if self.consecutive_script_failures >= self.max_script_failures:
                                     logger.error(
                                         f"       🔄 Script failed {self.max_script_failures} times - triggering restart")
-                                    # Set flag to trigger restart
                                     self.force_restart_now = True
-                                    return "RESTART_TRIGGERED"  # Return early to trigger restart
+                                    return "RESTART_TRIGGERED"
                             else:
-                                # Reset counter on success
                                 self.consecutive_script_failures = 0
                                 logger.info(f"       ✅ Script executed successfully - reset failure counter")
 
@@ -1673,7 +2018,6 @@ class ExtractionGeneratorEvaluatorPair:
                         output = event['data'].get('output', '')
                         logger.info(f"       🎯 {agent_name} chain completed: {chain_name}")
 
-                        # Capture the agent's response
                         if isinstance(output, dict) and 'messages' in output:
                             last_message = output['messages'][-1] if output['messages'] else None
                             if last_message and hasattr(last_message, 'content'):
@@ -1684,7 +2028,6 @@ class ExtractionGeneratorEvaluatorPair:
                             agent_response = output
 
             finally:
-                # Cancel the inactivity checker
                 inactivity_task.cancel()
                 try:
                     await inactivity_task
@@ -1694,15 +2037,13 @@ class ExtractionGeneratorEvaluatorPair:
             logger.info(f"     ✅ {agent_name} finished speaking")
             logger.info(f"     🔧 Tools used: {', '.join(tool_calls_made) if tool_calls_made else 'None'}")
             logger.info(f"     📄 Response length: {len(agent_response)} characters")
-            logger.info(f"     🗨️ {agent_name} said: {agent_response}...")
 
             return agent_response or f"{agent_name} completed turn {turn} (no response captured)"
 
         except asyncio.TimeoutError:
             logger.error(f"     ⏰ {agent_name} INACTIVITY TIMEOUT after {timeout_seconds} seconds")
-            logger.error(f"     🔄 This will trigger a restart of the generation process")
-            raise Exception(
-                f"{agent_name} timed out after {timeout_seconds} seconds of inactivity - restarting generation")
+            logger.error(f"     🔄 This will trigger a hang recovery")
+            raise Exception(f"{agent_name} timed out after {timeout_seconds} seconds of inactivity")
         except Exception as e:
             logger.error(f"     ❌ {agent_name} error: {str(e)}")
             return f"{agent_name} error on turn {turn}: {str(e)}"
@@ -1712,8 +2053,7 @@ def cleanup_owners_directory():
     """Clean up the owners and data directories at the start of workflow"""
     directories_to_cleanup = [
         ("owners", os.path.join(BASE_DIR, "owners")),
-        ("data", os.path.join(BASE_DIR, "data")),
-        ("scripts", os.path.join(BASE_DIR, "scripts"))
+        ("data", os.path.join(BASE_DIR, "data"))
     ]
 
     for dir_name, dir_path in directories_to_cleanup:
@@ -1868,25 +2208,45 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
         # Read seed.csv and create mapping
         logger.info("Reading seed.csv for JSON updates...")
         seed_data = {}
-        seed_csv_path = os.path.join(BASE_DIR, "seed.csv")
 
         if os.path.exists(seed_csv_path):
-            seed_df = pd.read_csv(seed_csv_path)
+            # Fix: Read with proper dtypes to preserve leading zeros
+            seed_df = pd.read_csv(seed_csv_path, dtype={
+                'parcel_id': str,
+                'source_identifier': str
+            })
             logger.info(f"📊 Found {len(seed_df)} entries in seed.csv")
 
             # Create mapping from parcel_id (original folder name) to http_request and source_identifier
             for _, row in seed_df.iterrows():
-                parcel_id = str(row.get('parcel_id')) if row.get('parcel_id') is not None else str(
-                    row.get('source_identifier'))
+                # Since we read as strings, no conversion needed - just strip whitespace
+                if pd.notna(row.get('parcel_id')):
+                    parcel_id = str(row['parcel_id']).strip()
+                elif pd.notna(row.get('source_identifier')):
+                    parcel_id = str(row['source_identifier']).strip()
+                else:
+                    continue
+
                 logger.info(f"   📋 Processing seed for parcel_id: {parcel_id}")
+
                 method = row.get('method')
                 url = row.get('url')
                 multiValueQueryString = row.get('multiValueQueryString')
+
+                # Use the robust parser
+                parsed_query_string = parse_multi_value_query_string(multiValueQueryString)
+
+                if parsed_query_string is None:
+                    logger.error(f"   ❌ Could not parse multiValueQueryString for parcel {parcel_id}")
+                    # Continue processing even if parsing fails - don't skip the entire record
+                else:
+                    logger.info(f"   ✅ Successfully parsed multiValueQueryString for parcel {parcel_id}")
+
                 seed_data[parcel_id] = {
                     "source_http_request": {
                         "method": method,
                         "url": url,
-                        "multiValueQueryString": json.loads(multiValueQueryString) if multiValueQueryString else None,
+                        "multiValueQueryString": parsed_query_string,  # This will be None if parsing failed
                     },
                     'source_identifier': row['source_identifier']
                 }
@@ -1894,12 +2254,11 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
             logger.info(f"✅ Created seed mapping for {len(seed_data)} parcel IDs")
         else:
             logger.warning("⚠️ seed.csv not found, skipping JSON updates")
-            seed_data = {}
 
         # Copy data to submit directory with proper naming and build relationships
         copied_count = 0
 
-        # NEW: Collect all relationship building errors
+        # Collect all relationship building errors
         all_relationship_errors = []
 
         for folder_name in os.listdir(data_dir):
@@ -1951,7 +2310,7 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
                 else:
                     logger.warning(f"   ⚠️ No seed data found for parcel {folder_name}")
 
-                # Build relationship files dynamically - MODIFIED TO CAPTURE ERRORS
+                # Build relationship files dynamically
                 logger.info(f"   🔗 Building relationship files for {target_folder_name}")
                 relationship_files, relationship_errors = build_relationship_files(dst_folder_path)
 
@@ -1972,7 +2331,7 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
                     logger.info(
                         f"   ✅ Created {county_data_group_cid}.json with {len(relationship_files)} relationship files")
 
-        # NEW: Check if we have relationship errors before proceeding
+        # Check if we have relationship errors before proceeding
         if all_relationship_errors:
             logger.error("❌ Relationship building errors found - returning early")
             error_details = "Relationship Building Errors Found:\n\n"
@@ -2261,7 +2620,7 @@ def create_county_data_group(relationship_files: List[str]) -> Dict[str, Any]:
             all_relationships["property_has_structure"] = ipld_ref
         elif "relationship_sales" in rel_file and "person" in rel_file:
             sales_person_relationships.append(ipld_ref)
-        elif "relationship_sales_company" in rel_file and "company" in rel_file:
+        elif "relationship_sales" in rel_file and "company" in rel_file:
             sales_company_relationships.append(ipld_ref)
 
     # Set array relationships
@@ -2609,9 +2968,9 @@ def download_scripts_from_github():
     # Try multiple variations of the county name
     county_variations = [
         county_name.lower(),  # lowercase
-        county_name,          # original case
+        county_name,  # original case
         county_name.title(),  # Title Case
-        county_name.upper()   # UPPERCASE
+        county_name.upper()  # UPPERCASE
     ]
 
     try:
@@ -2627,7 +2986,8 @@ def download_scripts_from_github():
                 logger.warning(f"⚠️ County directory '{variation}' not found, trying next variation...")
                 continue
             elif response.status_code != 200:
-                logger.warning(f"⚠️ GitHub API request failed for '{variation}': {response.status_code}, trying next variation...")
+                logger.warning(
+                    f"⚠️ GitHub API request failed for '{variation}': {response.status_code}, trying next variation...")
                 continue
 
             # If we get here, we found a valid directory
@@ -2669,7 +3029,7 @@ def download_scripts_from_github():
 
 async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
-    cleanup_owners_directory()
+
     logger.info("Fetching County data group CID from schema manifest...")
     try:
         county_data_group_cid = fetch_county_data_group_cid()
@@ -2699,7 +3059,7 @@ async def run_three_node_workflow():
         logger.error("Failed to load schemas from IPFS")
         return
 
-
+    cleanup_owners_directory()
 
     def discover_input_files():
         """Discover all processable files in input folder"""
