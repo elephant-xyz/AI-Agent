@@ -1,7 +1,9 @@
 import os
 import re
 import json
+import csv
 from bs4 import BeautifulSoup
+
 
 def clean_money(val):
     if val is None:
@@ -13,6 +15,7 @@ def clean_money(val):
     except Exception:
         return None
 
+
 def clean_int(val):
     if val is None:
         return None
@@ -21,10 +24,12 @@ def clean_int(val):
     except Exception:
         return None
 
+
 def clean_str(val):
     if val is None:
         return None
     return str(val).strip()
+
 
 def parse_date(val):
     if not val:
@@ -33,6 +38,7 @@ def parse_date(val):
     if m:
         return f"{m.group(3)}-{m.group(1)}-{m.group(2)}"
     return val
+
 
 def remove_null_files(directory):
     for root, dirs, files in os.walk(directory):
@@ -47,6 +53,7 @@ def remove_null_files(directory):
                 except Exception:
                     continue
 
+
 with open("./owners/owners_schema.json") as f:
     owners_schema = json.load(f)
 with open("./owners/layout_data.json") as f:
@@ -55,6 +62,16 @@ with open("./owners/structure_data.json") as f:
     structure_data = json.load(f)
 with open("./owners/utility_data.json") as f:
     utility_data = json.load(f)
+
+# Load seed data
+seed_data = {}
+if os.path.exists('seed.csv'):
+    with open('seed.csv', newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            sid = row.get('source_identifier')
+            if sid:
+                seed_data[str(sid).strip()] = row
 
 os.makedirs("./data", exist_ok=True)
 input_dir = "./input/"
@@ -68,6 +85,7 @@ for input_file in input_files:
         html = f.read()
     soup = BeautifulSoup(html, "html.parser")
     addr_key = f"property_{parcel_id}"
+
     # --- PROPERTY ---
     property_json = {
         "source_http_request": None,
@@ -196,14 +214,15 @@ for input_file in input_files:
                     price = None
                 sales_json = {
                     "source_http_request": None,
-                    "request_identifier": f"{parcel_id}_sale_{i+1}",
+                    "request_identifier": f"{parcel_id}_sale_{i + 1}",
                     "ownership_transfer_date": date,
                     "purchase_price_amount": price
                 }
                 sales_jsons.append(sales_json)
                 sales_years.append(date[:4] if date else None)
-                with open(os.path.join(property_dir, f"sales_{i+1}.json"), "w") as f:
+                with open(os.path.join(property_dir, f"sales_{i + 1}.json"), "w") as f:
                     json.dump(sales_json, f, indent=2)
+
     # --- TAXES ---
     tax_years = set()
     assessed = {}
@@ -225,7 +244,7 @@ for input_file in input_files:
                     label = tds[0].text.strip().lower()
                     for j, year in enumerate(years):
                         tax_years.add(year)
-                        val = clean_money(tds[j+1].text) if j+1 < len(tds) else None
+                        val = clean_money(tds[j + 1].text) if j + 1 < len(tds) else None
                         if val == 0:
                             val = None
                         if 'assessed value' in label:
@@ -245,7 +264,7 @@ for input_file in input_files:
                     label = tds[0].text.strip().lower()
                     for j, year in enumerate(years):
                         tax_years.add(year)
-                        val = clean_money(tds[j+1].text) if j+1 < len(tds) else None
+                        val = clean_money(tds[j + 1].text) if j + 1 < len(tds) else None
                         if val == 0:
                             val = None
                         if 'total market value' in label:
@@ -267,7 +286,7 @@ for input_file in input_files:
                     label = tds[0].text.strip().lower()
                     for j, year in enumerate(years):
                         if 'total tax' in label:
-                            val = clean_money(tds[j+1].text) if j+1 < len(tds) else None
+                            val = clean_money(tds[j + 1].text) if j + 1 < len(tds) else None
                             if val == 0:
                                 val = None
                             monthly_tax[year] = val
@@ -276,6 +295,8 @@ for input_file in input_files:
             yint = int(year)
         except Exception:
             continue
+
+
         def safe_val(val):
             try:
                 if val is None:
@@ -290,6 +311,8 @@ for input_file in input_files:
                 return v
             except Exception:
                 return 0.0
+
+
         # Ensure property_taxable_value_amount is a positive number with at most 2 decimal places
         taxable_val = safe_val(taxable.get(year))
         assessed_val = safe_val(assessed.get(year))
@@ -312,6 +335,7 @@ for input_file in input_files:
         }
         with open(os.path.join(property_dir, f"tax_{year}.json"), "w") as f:
             json.dump(tax_json, f, indent=2)
+
     # --- OWNERS (PERSON/COMPANY) ---
     if parcel_id in owners_schema:
         owners_by_date = owners_schema[parcel_id]["owners_by_date"]
@@ -329,7 +353,7 @@ for input_file in input_files:
                     person_count += 1
                     person_json = {
                         "source_http_request": None,
-                        "request_identifier": f"{parcel_id}_person_{i+1}_{person_count}",
+                        "request_identifier": f"{parcel_id}_person_{i + 1}_{person_count}",
                         "birth_date": None,
                         "first_name": owner.get("first_name"),
                         "last_name": owner.get("last_name"),
@@ -339,7 +363,7 @@ for input_file in input_files:
                         "us_citizenship_status": None,
                         "veteran_status": None
                     }
-                    with open(os.path.join(property_dir, f"person_{i+1}_{person_count}.json"), "w") as f:
+                    with open(os.path.join(property_dir, f"person_{i + 1}_{person_count}.json"), "w") as f:
                         json.dump(person_json, f, indent=2)
                 elif owner["type"] == "company":
                     company_key = owner.get("name")
@@ -349,16 +373,17 @@ for input_file in input_files:
                     company_count += 1
                     company_json = {
                         "source_http_request": None,
-                        "request_identifier": f"{parcel_id}_company_{i+1}_{company_count}",
+                        "request_identifier": f"{parcel_id}_company_{i + 1}_{company_count}",
                         "name": owner.get("name")
                     }
-                    with open(os.path.join(property_dir, f"company_{i+1}_{company_count}.json"), "w") as f:
+                    with open(os.path.join(property_dir, f"company_{i + 1}_{company_count}.json"), "w") as f:
                         json.dump(company_json, f, indent=2)
+
     # --- RELATIONSHIP FILES ---
     if parcel_id in owners_schema:
         owners_by_date = owners_schema[parcel_id]["owners_by_date"]
         for i, (date, owners) in enumerate(owners_by_date.items()):
-            sales_file = f"sales_{i+1}.json"
+            sales_file = f"sales_{i + 1}.json"
             person_count = 0
             company_count = 0
             seen_persons = set()
@@ -371,10 +396,11 @@ for input_file in input_files:
                     seen_persons.add(person_key)
                     person_count += 1
                     rel = {
-                        "to": {"/": f"./person_{i+1}_{person_count}.json"},
+                        "to": {"/": f"./person_{i + 1}_{person_count}.json"},
                         "from": {"/": f"./{sales_file}"}
                     }
-                    with open(os.path.join(property_dir, f"relationship_sales_person_{i+1}_{person_count}.json"), "w") as f:
+                    with open(os.path.join(property_dir, f"relationship_sales_person_{i + 1}_{person_count}.json"),
+                              "w") as f:
                         json.dump(rel, f, indent=2)
                 elif owner["type"] == "company":
                     company_key = owner.get("name")
@@ -383,18 +409,32 @@ for input_file in input_files:
                     seen_companies.add(company_key)
                     company_count += 1
                     rel = {
-                        "to": {"/": f"./company_{i+1}_{company_count}.json"},
+                        "to": {"/": f"./company_{i + 1}_{company_count}.json"},
                         "from": {"/": f"./{sales_file}"}
                     }
-                    with open(os.path.join(property_dir, f"relationship_sales_company_{i+1}_{company_count}.json"), "w") as f:
+                    with open(os.path.join(property_dir, f"relationship_sales_company_{i + 1}_{company_count}.json"),
+                              "w") as f:
                         json.dump(rel, f, indent=2)
+
     # --- STRUCTURE ---
     if addr_key in structure_data:
         struct = structure_data[addr_key].copy()
         if 'year_built' in struct:
             del struct['year_built']
         required_structure_fields = [
-            "source_http_request", "request_identifier", "architectural_style_type", "attachment_type", "exterior_wall_material_primary", "exterior_wall_material_secondary", "exterior_wall_condition", "exterior_wall_insulation_type", "flooring_material_primary", "flooring_material_secondary", "subfloor_material", "flooring_condition", "interior_wall_structure_material", "interior_wall_surface_material_primary", "interior_wall_surface_material_secondary", "interior_wall_finish_primary", "interior_wall_finish_secondary", "interior_wall_condition", "roof_covering_material", "roof_underlayment_type", "roof_structure_material", "roof_design_type", "roof_condition", "roof_age_years", "gutters_material", "gutters_condition", "roof_material_type", "foundation_type", "foundation_material", "foundation_waterproofing", "foundation_condition", "ceiling_structure_material", "ceiling_surface_material", "ceiling_insulation_type", "ceiling_height_average", "ceiling_condition", "exterior_door_material", "interior_door_material", "window_frame_material", "window_glazing_type", "window_operation_type", "window_screen_material", "primary_framing_material", "secondary_framing_material", "structural_damage_indicators"
+            "source_http_request", "request_identifier", "architectural_style_type", "attachment_type",
+            "exterior_wall_material_primary", "exterior_wall_material_secondary", "exterior_wall_condition",
+            "exterior_wall_insulation_type", "flooring_material_primary", "flooring_material_secondary",
+            "subfloor_material", "flooring_condition", "interior_wall_structure_material",
+            "interior_wall_surface_material_primary", "interior_wall_surface_material_secondary",
+            "interior_wall_finish_primary", "interior_wall_finish_secondary", "interior_wall_condition",
+            "roof_covering_material", "roof_underlayment_type", "roof_structure_material", "roof_design_type",
+            "roof_condition", "roof_age_years", "gutters_material", "gutters_condition", "roof_material_type",
+            "foundation_type", "foundation_material", "foundation_waterproofing", "foundation_condition",
+            "ceiling_structure_material", "ceiling_surface_material", "ceiling_insulation_type",
+            "ceiling_height_average", "ceiling_condition", "exterior_door_material", "interior_door_material",
+            "window_frame_material", "window_glazing_type", "window_operation_type", "window_screen_material",
+            "primary_framing_material", "secondary_framing_material", "structural_damage_indicators"
         ]
         for k in required_structure_fields:
             if k not in struct:
@@ -403,6 +443,7 @@ for input_file in input_files:
         struct["request_identifier"] = parcel_id
         with open(os.path.join(property_dir, "structure.json"), "w") as f:
             json.dump(struct, f, indent=2)
+
     # --- UTILITY ---
     if addr_key in utility_data:
         util = utility_data[addr_key]
@@ -410,6 +451,7 @@ for input_file in input_files:
         util["request_identifier"] = parcel_id
         with open(os.path.join(property_dir, "utility.json"), "w") as f:
             json.dump(util, f, indent=2)
+
     # --- LAYOUT ---
     # Count bedrooms, full baths, half baths from structural_elements table
     bedroom_count = 0
@@ -437,7 +479,7 @@ for input_file in input_files:
     for i in range(bedroom_count):
         layout = {
             "source_http_request": None,
-            "request_identifier": f"{parcel_id}_layout_bedroom_{i+1}",
+            "request_identifier": f"{parcel_id}_layout_bedroom_{i + 1}",
             "space_type": "Bedroom",
             "flooring_material_type": None,
             "size_square_feet": None,
@@ -470,12 +512,12 @@ for input_file in input_files:
             "pool_surface_type": None,
             "pool_water_quality": None
         }
-        with open(os.path.join(property_dir, f"layout_bedroom_{i+1}.json"), "w") as f:
+        with open(os.path.join(property_dir, f"layout_bedroom_{i + 1}.json"), "w") as f:
             json.dump(layout, f, indent=2)
     for i in range(bathroom_count):
         layout = {
             "source_http_request": None,
-            "request_identifier": f"{parcel_id}_layout_bathroom_{i+1}",
+            "request_identifier": f"{parcel_id}_layout_bathroom_{i + 1}",
             "space_type": "Full Bathroom",
             "flooring_material_type": None,
             "size_square_feet": None,
@@ -508,12 +550,12 @@ for input_file in input_files:
             "pool_surface_type": None,
             "pool_water_quality": None
         }
-        with open(os.path.join(property_dir, f"layout_bathroom_{i+1}.json"), "w") as f:
+        with open(os.path.join(property_dir, f"layout_bathroom_{i + 1}.json"), "w") as f:
             json.dump(layout, f, indent=2)
     for i in range(half_bath_count):
         layout = {
             "source_http_request": None,
-            "request_identifier": f"{parcel_id}_layout_halfbath_{i+1}",
+            "request_identifier": f"{parcel_id}_layout_halfbath_{i + 1}",
             "space_type": "Half Bathroom / Powder Room",
             "flooring_material_type": None,
             "size_square_feet": None,
@@ -546,15 +588,19 @@ for input_file in input_files:
             "pool_surface_type": None,
             "pool_water_quality": None
         }
-        with open(os.path.join(property_dir, f"layout_halfbath_{i+1}.json"), "w") as f:
+        with open(os.path.join(property_dir, f"layout_halfbath_{i + 1}.json"), "w") as f:
             json.dump(layout, f, indent=2)
     # Ensure total layout files = bedrooms + full baths + half baths
     layout_files = [f for f in os.listdir(property_dir) if f.startswith("layout_") and f.endswith(".json")]
-    assert len(layout_files) == bedroom_count + bathroom_count + half_bath_count, f"Layout file count mismatch for {parcel_id}"
+    assert len(
+        layout_files) == bedroom_count + bathroom_count + half_bath_count, f"Layout file count mismatch for {parcel_id}"
+
     # --- LOT ---
     lot_json = None
     lot_schema_fields = [
-        "source_http_request", "request_identifier", "lot_type", "lot_length_feet", "lot_width_feet", "lot_area_sqft", "landscaping_features", "view", "fencing_type", "fence_height", "fence_length", "driveway_material", "driveway_condition", "lot_condition_issues"
+        "source_http_request", "request_identifier", "lot_type", "lot_length_feet", "lot_width_feet", "lot_area_sqft",
+        "landscaping_features", "view", "fencing_type", "fence_height", "fence_length", "driveway_material",
+        "driveway_condition", "lot_condition_issues"
     ]
     lot_json = {k: None for k in lot_schema_fields}
     lot_json["source_http_request"] = None
@@ -562,17 +608,8 @@ for input_file in input_files:
 
     with open(os.path.join(property_dir, "lot.json"), "w") as f:
         json.dump(lot_json, f, indent=2)
+
     # --- ADDRESS EXTRACTION ---
-    # Extract address from input file and supplement with seed.csv if needed
-    import csv
-    seed_data = {}
-    if os.path.exists('seed.csv'):
-        with open('seed.csv', newline='', encoding='utf-8') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                sid = row.get('source_identifier') or row.get('address')
-                if sid:
-                    seed_data[str(sid).strip()] = row
     address_json = {
         "source_http_request": None,
         "request_identifier": parcel_id,
@@ -595,73 +632,180 @@ for input_file in input_files:
         "section": None,
         "block": None
     }
-    # Try to extract from MainContent_lblLocation
-    location = soup.find(id="MainContent_lblLocation")
-    if location:
-        address_line = location.text.strip()
-        # Try to parse street number, name, suffix, unit
-        address_parts = address_line.split()
-        if address_parts and address_parts[0].isdigit():
-            address_json["street_number"] = address_parts[0]
-            suffix_map = {
-                "BLVD": "Blvd", "AVE": "Ave", "ST": "St", "DR": "Dr", "LN": "Ln", "RD": "Rd", "CT": "Ct", "PL": "Pl", "WAY": "Way", "CIR": "Cir", "PKWY": "Pkwy", "TRAIL": "Trl", "TER": "Ter", "PLZ": "Plz", "HWY": "Hwy", "LOOP": "Loop", "BND": "Bnd", "CV": "Cv", "CRK": "Crk", "MNR": "Mnr", "TRL": "Trl", "PT": "Pt", "SQ": "Sq", "RUN": "Run", "ROW": "Row", "XING": "Xing", "WALK": "Walk", "PATH": "Path", "BCH": "Bch", "ISLE": "Isle", "PLS": "Pls", "PLN": "Pln", "PASS": "Pass", "RTE": "Rte", "EST": "Est", "ESTS": "Ests", "VLG": "Vlg", "VLGS": "Vlgs", "VILLAGE": "Vlg", "VILLAGES": "Vlgs", "COVE": "Cv", "HILL": "Hl", "HILLS": "Hls", "VIEW": "Vw", "VIEWS": "Vws", "COURT": "Ct", "CRES": "Cres", "CRESCENT": "Cres", "GROVE": "Grv", "GROVES": "Grvs", "MEADOW": "Mdw", "MEADOWS": "Mdws", "RIDGE": "Rdg", "RIDGES": "Rdgs", "TERRACE": "Ter", "TERR": "Ter", "PARK": "Park", "PARKWAY": "Pkwy", "CROSSING": "Xing", "CROSSINGS": "Xing", "LANDING": "Lndg", "LANDINGS": "Lndg", "GLEN": "Gln", "GLENS": "Glns", "LAKE": "Lk", "LAKES": "Lks", "CREEK": "Crk", "CREEKS": "Crk", "BAY": "Bay", "BAYS": "Bay", "POINT": "Pt", "POINTS": "Pt", "SHORE": "Shr", "SHORES": "Shrs", "WOOD": "Wd", "WOODS": "Wds", "FOREST": "Frst", "FORESTS": "Frst", "ESTATE": "Est", "ESTATES": "Ests", "MOUNT": "Mt", "MOUNTAIN": "Mtn", "MOUNTAINS": "Mtns", "CAMP": "Cp", "CAMPS": "Cp", "CAMPUS": "Cp", "CENTER": "Ctr", "CENTERS": "Ctrs", "PLAZA": "Plz", "PLAZAS": "Plz", "SQUARE": "Sq", "SQUARES": "Sqs", "STREET": "St", "AVENUE": "Ave", "DRIVE": "Dr", "ROAD": "Rd", "LANE": "Ln", "COURT": "Ct", "PLACE": "Pl", "WAY": "Way", "CIRCLE": "Cir", "HIGHWAY": "Hwy", "BEND": "Bnd"
-            }
-            # Find suffix
-            suffix = None
-            suffix_idx = None
-            for i in range(len(address_parts)-1, 0, -1):
-                part = address_parts[i].upper().replace(",", "")
-                if part in suffix_map:
-                    suffix = suffix_map[part]
-                    suffix_idx = i
-                    address_json["street_suffix_type"] = suffix
-                    break
-            # Remove directionals from street_name
-            street_name_parts = address_parts[1:suffix_idx] if suffix_idx else address_parts[1:]
-            # Remove any part that is a directional
-            directionals = {"N", "S", "E", "W", "NE", "NW", "SE", "SW"}
-            street_name_clean = " ".join([p for p in street_name_parts if p.upper() not in directionals])
-            address_json["street_name"] = street_name_clean if street_name_clean else None
-            if suffix_idx and suffix_idx+1 < len(address_parts):
-                address_json["unit_identifier"] = " ".join(address_parts[suffix_idx+1:])
-            if not suffix:
-                address_json["street_suffix_type"] = None
-                # Remove directionals from street_name
-                street_name_parts = address_parts[1:]
-                street_name_clean = " ".join([p for p in street_name_parts if p.upper() not in directionals])
-                address_json["street_name"] = street_name_clean if street_name_clean else None
 
-        # Try to extract pre/post directionals
-        for idx, part in enumerate(address_parts):
-            up = part.upper()
-            if up in ["N", "S", "E", "W", "NE", "NW", "SE", "SW"]:
-                if idx == 1:
-                    address_json["street_pre_directional_text"] = up
-                elif idx == len(address_parts)-2:
-                    address_json["street_post_directional_text"] = up
-    city = soup.find(id="MainContent_lblMunicipality")
-    if city:
-        address_json["city_name"] = city.text.strip().upper()
-    # Supplement with seed.csv if available
+    # FIRST: Parse from seed.csv if available
     if parcel_id in seed_data:
         row = seed_data[parcel_id]
         addr = row.get('address') or ''
+
+        # Extract unit identifier from # symbol
+        if '#' in addr:
+            parts = addr.split('#')
+            if len(parts) > 1:
+                unit_part = parts[1].split(',')[0].strip()
+                address_json["unit_identifier"] = unit_part if unit_part else None
+
+        # Parse full address from seed
         addr_parts = [a.strip() for a in addr.split(',')]
+        if len(addr_parts) >= 1:
+            # Parse street address (before first comma)
+            street_addr = addr_parts[0]
+            # Remove unit part if it exists
+            if '#' in street_addr:
+                street_addr = street_addr.split('#')[0].strip()
+
+            address_parts = street_addr.split()
+            if address_parts and address_parts[0].isdigit():
+                address_json["street_number"] = address_parts[0]
+
+                suffix_map = {
+                    "BLVD": "Blvd", "AVE": "Ave", "ST": "St", "DR": "Dr", "LN": "Ln", "RD": "Rd",
+                    "CT": "Ct", "PL": "Pl", "WAY": "Way", "CIR": "Cir", "PKWY": "Pkwy",
+                    "TRAIL": "Trl", "TER": "Ter", "PLZ": "Plz", "HWY": "Hwy", "HIGHWAY": "Hwy",
+                    "LOOP": "Loop", "BND": "Bnd", "CV": "Cv", "CRK": "Crk", "MNR": "Mnr",
+                    "TRL": "Trl", "PT": "Pt", "SQ": "Sq", "RUN": "Run", "ROW": "Row",
+                    "XING": "Xing", "WALK": "Walk", "PATH": "Path", "BCH": "Bch", "ISLE": "Isle",
+                    "PLS": "Pls", "PLN": "Pln", "PASS": "Pass", "RTE": "Rte", "EST": "Est",
+                    "ESTS": "Ests", "VLG": "Vlg", "VLGS": "Vlgs", "VILLAGE": "Vlg",
+                    "VILLAGES": "Vlgs", "COVE": "Cv", "HILL": "Hl", "HILLS": "Hls",
+                    "VIEW": "Vw", "VIEWS": "Vws", "COURT": "Ct", "CRES": "Cres",
+                    "CRESCENT": "Cres", "GROVE": "Grv", "GROVES": "Grvs", "MEADOW": "Mdw",
+                    "MEADOWS": "Mdws", "RIDGE": "Rdg", "RIDGES": "Rdgs", "TERRACE": "Ter",
+                    "TERR": "Ter", "PARK": "Park", "PARKWAY": "Pkwy", "CROSSING": "Xing",
+                    "CROSSINGS": "Xing", "LANDING": "Lndg", "LANDINGS": "Lndg", "GLEN": "Gln",
+                    "GLENS": "Glns", "LAKE": "Lk", "LAKES": "Lks", "CREEK": "Crk",
+                    "CREEKS": "Crk", "BAY": "Bay", "BAYS": "Bay", "POINT": "Pt",
+                    "POINTS": "Pt", "SHORE": "Shr", "SHORES": "Shrs", "WOOD": "Wd",
+                    "WOODS": "Wds", "FOREST": "Frst", "FORESTS": "Frst", "ESTATE": "Est",
+                    "ESTATES": "Ests", "MOUNT": "Mt", "MOUNTAIN": "Mtn", "MOUNTAINS": "Mtns",
+                    "CAMP": "Cp", "CAMPS": "Cp", "CAMPUS": "Cp", "CENTER": "Ctr",
+                    "CENTERS": "Ctrs", "PLAZA": "Plz", "PLAZAS": "Plz", "SQUARE": "Sq",
+                    "SQUARES": "Sqs", "STREET": "St", "AVENUE": "Ave", "DRIVE": "Dr",
+                    "ROAD": "Rd", "LANE": "Ln", "PLACE": "Pl", "CIRCLE": "Cir",
+                    "BEND": "Bnd"
+                }
+
+                # Find suffix
+                suffix = None
+                suffix_idx = None
+                for i in range(len(address_parts) - 1, 0, -1):
+                    part = address_parts[i].upper().replace(",", "")
+                    if part in suffix_map:
+                        suffix = suffix_map[part]
+                        suffix_idx = i
+                        address_json["street_suffix_type"] = suffix
+                        break
+
+                # Get street name (between street number and suffix)
+                if suffix_idx:
+                    street_name_parts = address_parts[1:suffix_idx]
+                else:
+                    street_name_parts = address_parts[1:]
+
+                # Handle directionals
+                directionals = {"N", "S", "E", "W", "NE", "NW", "SE", "SW"}
+                street_name_clean_parts = []
+
+                for idx, part in enumerate(street_name_parts):
+                    up = part.upper()
+                    if up in directionals:
+                        if idx == 0:  # First part is pre-directional
+                            address_json["street_pre_directional_text"] = up
+                        elif idx == len(street_name_parts) - 1:  # Last part is post-directional
+                            address_json["street_post_directional_text"] = up
+                        else:
+                            street_name_clean_parts.append(part)
+                    else:
+                        street_name_clean_parts.append(part)
+
+                address_json["street_name"] = " ".join(street_name_clean_parts) if street_name_clean_parts else None
+
+        # Parse city
+        if len(addr_parts) >= 2:
+            address_json["city_name"] = addr_parts[1].strip().upper()
+
+        # Parse state and zip
         if len(addr_parts) >= 3:
             state_zip = addr_parts[2].split()
             if len(state_zip) >= 2:
                 address_json["postal_code"] = state_zip[1][:5]
-            if 'state_zip' in locals() and len(state_zip) >= 3:
+            if len(state_zip) >= 3:
                 plus4 = state_zip[2]
                 if len(plus4) == 4 and plus4.isdigit():
                     address_json["plus_four_postal_code"] = plus4
-        if not address_json["city_name"] and len(addr_parts) >= 2:
-            address_json["city_name"] = addr_parts[1].strip().upper()
-    # Fill required fields with null if missing
-    for k in ["city_name", "country_code", "county_name", "latitude", "longitude", "plus_four_postal_code", "postal_code", "state_code", "street_name", "street_post_directional_text", "street_pre_directional_text", "street_number", "street_suffix_type", "unit_identifier", "township", "range", "section", "block"]:
-        if k not in address_json:
-            address_json[k] = None
+
+    # SECOND: Fill missing fields from HTML if seed.csv didn't provide them
+    if not address_json["city_name"]:
+        city = soup.find(id="MainContent_lblMunicipality")
+        if city:
+            address_json["city_name"] = city.text.strip().upper()
+
+    # Only parse from HTML if seed.csv didn't provide address info
+    if parcel_id not in seed_data:
+        location = soup.find(id="MainContent_lblLocation")
+        if location:
+            address_line = location.text.strip()
+            # Try to parse street number, name, suffix, unit
+            address_parts = address_line.split()
+            if address_parts and address_parts[0].isdigit():
+                address_json["street_number"] = address_parts[0]
+                suffix_map = {
+                    "BLVD": "Blvd", "AVE": "Ave", "ST": "St", "DR": "Dr", "LN": "Ln", "RD": "Rd", "CT": "Ct",
+                    "PL": "Pl", "WAY": "Way", "CIR": "Cir", "PKWY": "Pkwy", "TRAIL": "Trl", "TER": "Ter", "PLZ": "Plz",
+                    "HWY": "Hwy", "LOOP": "Loop", "BND": "Bnd", "CV": "Cv", "CRK": "Crk", "MNR": "Mnr", "TRL": "Trl",
+                    "PT": "Pt", "SQ": "Sq", "RUN": "Run", "ROW": "Row", "XING": "Xing", "WALK": "Walk", "PATH": "Path",
+                    "BCH": "Bch", "ISLE": "Isle", "PLS": "Pls", "PLN": "Pln", "PASS": "Pass", "RTE": "Rte",
+                    "EST": "Est", "ESTS": "Ests", "VLG": "Vlg", "VLGS": "Vlgs", "VILLAGE": "Vlg", "VILLAGES": "Vlgs",
+                    "COVE": "Cv", "HILL": "Hl", "HILLS": "Hls", "VIEW": "Vw", "VIEWS": "Vws", "COURT": "Ct",
+                    "CRES": "Cres", "CRESCENT": "Cres", "GROVE": "Grv", "GROVES": "Grvs", "MEADOW": "Mdw",
+                    "MEADOWS": "Mdws", "RIDGE": "Rdg", "RIDGES": "Rdgs", "TERRACE": "Ter", "TERR": "Ter",
+                    "PARK": "Park", "PARKWAY": "Pkwy", "CROSSING": "Xing", "CROSSINGS": "Xing", "LANDING": "Lndg",
+                    "LANDINGS": "Lndg", "GLEN": "Gln", "GLENS": "Glns", "LAKE": "Lk", "LAKES": "Lks", "CREEK": "Crk",
+                    "CREEKS": "Crk", "BAY": "Bay", "BAYS": "Bay", "POINT": "Pt", "POINTS": "Pt", "SHORE": "Shr",
+                    "SHORES": "Shrs", "WOOD": "Wd", "WOODS": "Wds", "FOREST": "Frst", "FORESTS": "Frst",
+                    "ESTATE": "Est", "ESTATES": "Ests", "MOUNT": "Mt", "MOUNTAIN": "Mtn", "MOUNTAINS": "Mtns",
+                    "CAMP": "Cp", "CAMPS": "Cp", "CAMPUS": "Cp", "CENTER": "Ctr", "CENTERS": "Ctrs", "PLAZA": "Plz",
+                    "PLAZAS": "Plz", "SQUARE": "Sq", "SQUARES": "Sqs", "STREET": "St", "AVENUE": "Ave", "DRIVE": "Dr",
+                    "ROAD": "Rd", "LANE": "Ln", "COURT": "Ct", "PLACE": "Pl", "WAY": "Way", "CIRCLE": "Cir",
+                    "HIGHWAY": "Hwy", "BEND": "Bnd"
+                }
+                # Find suffix
+                suffix = None
+                suffix_idx = None
+                for i in range(len(address_parts) - 1, 0, -1):
+                    part = address_parts[i].upper().replace(",", "")
+                    if part in suffix_map:
+                        suffix = suffix_map[part]
+                        suffix_idx = i
+                        address_json["street_suffix_type"] = suffix
+                        break
+                # Remove directionals from street_name
+                street_name_parts = address_parts[1:suffix_idx] if suffix_idx else address_parts[1:]
+                # Remove any part that is a directional
+                directionals = {"N", "S", "E", "W", "NE", "NW", "SE", "SW"}
+                street_name_clean = " ".join([p for p in street_name_parts if p.upper() not in directionals])
+                address_json["street_name"] = street_name_clean if street_name_clean else None
+                if suffix_idx and suffix_idx + 1 < len(address_parts):
+                    address_json["unit_identifier"] = " ".join(address_parts[suffix_idx + 1:])
+                if not suffix:
+                    address_json["street_suffix_type"] = None
+                    # Remove directionals from street_name
+                    street_name_parts = address_parts[1:]
+                    street_name_clean = " ".join([p for p in street_name_parts if p.upper() not in directionals])
+                    address_json["street_name"] = street_name_clean if street_name_clean else None
+
+            # Try to extract pre/post directionals
+            for idx, part in enumerate(address_parts):
+                up = part.upper()
+                if up in ["N", "S", "E", "W", "NE", "NW", "SE", "SW"]:
+                    if idx == 1:
+                        address_json["street_pre_directional_text"] = up
+                    elif idx == len(address_parts) - 2:
+                        address_json["street_post_directional_text"] = up
+
     with open(os.path.join(property_dir, "address.json"), "w") as f:
         json.dump(address_json, f, indent=2)
+
     remove_null_files(property_dir)
+
 # End of script
