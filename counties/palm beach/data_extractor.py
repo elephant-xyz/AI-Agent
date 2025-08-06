@@ -481,6 +481,7 @@ for input_file in input_files:
             "source_http_request": None,
             "request_identifier": f"{parcel_id}_layout_bedroom_{i + 1}",
             "space_type": "Bedroom",
+            "space_index": i + 1,
             "flooring_material_type": None,
             "size_square_feet": None,
             "floor_level": None,
@@ -519,6 +520,7 @@ for input_file in input_files:
             "source_http_request": None,
             "request_identifier": f"{parcel_id}_layout_bathroom_{i + 1}",
             "space_type": "Full Bathroom",
+            "space_index": i + 1,
             "flooring_material_type": None,
             "size_square_feet": None,
             "floor_level": None,
@@ -557,6 +559,7 @@ for input_file in input_files:
             "source_http_request": None,
             "request_identifier": f"{parcel_id}_layout_halfbath_{i + 1}",
             "space_type": "Half Bathroom / Powder Room",
+            "space_index": i + 1,
             "flooring_material_type": None,
             "size_square_feet": None,
             "floor_level": None,
@@ -627,6 +630,7 @@ for input_file in input_files:
         "street_number": None,
         "street_suffix_type": None,
         "unit_identifier": None,
+        "route_number": None,
         "township": None,
         "range": None,
         "section": None,
@@ -643,7 +647,7 @@ for input_file in input_files:
             parts = addr.split('#')
             if len(parts) > 1:
                 unit_part = parts[1].split(',')[0].strip()
-                address_json["unit_identifier"] = unit_part if unit_part else None
+                address_json["unit_identifier"] = f"#{unit_part}" if unit_part else None
 
         # Parse full address from seed
         addr_parts = [a.strip() for a in addr.split(',')]
@@ -655,6 +659,7 @@ for input_file in input_files:
                 street_addr = street_addr.split('#')[0].strip()
 
             address_parts = street_addr.split()
+            print(address_parts)
             if address_parts and address_parts[0].isdigit():
                 address_json["street_number"] = address_parts[0]
 
@@ -704,21 +709,29 @@ for input_file in input_files:
 
                 # Handle directionals
                 directionals = {"N", "S", "E", "W", "NE", "NW", "SE", "SW"}
-                street_name_clean_parts = []
+                street_name_parts = []
 
-                for idx, part in enumerate(street_name_parts):
+                # Get parts between street number and suffix (or end if no suffix)
+                end_idx = suffix_idx if suffix_idx else len(address_parts)
+                remaining_parts = address_parts[1:]
+
+                for idx, part in enumerate(remaining_parts):
                     up = part.upper()
                     if up in directionals:
                         if idx == 0:  # First part is pre-directional
                             address_json["street_pre_directional_text"] = up
-                        elif idx == len(street_name_parts) - 1:  # Last part is post-directional
+                        elif idx == len(remaining_parts) - 1:  # Last part might be post-directional
                             address_json["street_post_directional_text"] = up
                         else:
-                            street_name_clean_parts.append(part)
+                            street_name_parts.append(part)
+                    elif part.isdigit():
+                        # This is likely a route number (like "1" in "US Hwy 1")
+                        route_number = part
+                        address_json["route_number"] = route_number  # SET THE ROUTE NUMBER
                     else:
-                        street_name_clean_parts.append(part)
+                        street_name_parts.append(part)
 
-                address_json["street_name"] = " ".join(street_name_clean_parts) if street_name_clean_parts else None
+                address_json["street_name"] = " ".join(street_name_parts) if street_name_parts else None
 
         # Parse city
         if len(addr_parts) >= 2:
