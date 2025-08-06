@@ -728,6 +728,8 @@ for input_file in input_files:
                         # This is likely a route number (like "1" in "US Hwy 1")
                         route_number = part
                         address_json["route_number"] = route_number  # SET THE ROUTE NUMBER
+                    elif up in suffix_map:
+                        continue
                     else:
                         street_name_parts.append(part)
 
