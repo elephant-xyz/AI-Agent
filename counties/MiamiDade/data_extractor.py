@@ -41,69 +41,228 @@ def load_seed_csv(seed_csv):
 # Address parsing helpers
 
 def parse_address_components(site_address, seed_row=None):
-    # Returns dict with all address schema fields, using input and seed.csv
-    addr = {}
-    # Street number
-    snum = site_address.get('StreetNumber')
-    addr['street_number'] = str(snum) if snum is not None and str(snum).strip() else None
-    # Street name
-    sname = site_address.get('StreetName')
-    addr['street_name'] = sname if sname else None
-    # Unit
-    unit = site_address.get('Unit')
-    addr['unit_identifier'] = unit if unit else None
-    # Plus four postal code and postal code
-    zip_code = site_address.get('Zip')
-    if zip_code and '-' in zip_code:
-        base, plus4 = zip_code.split('-', 1)
-        addr['postal_code'] = base
-        addr['plus_four_postal_code'] = plus4
-    elif zip_code:
-        addr['postal_code'] = zip_code
-        addr['plus_four_postal_code'] = None
-    else:
-        addr['postal_code'] = None
-        addr['plus_four_postal_code'] = None
-    # City
-    city = site_address.get('City')
-    addr['city_name'] = city.upper() if city else None
-    # State code: always FL from input/seed
-    addr['state_code'] = 'FL'
-    # Country
-    addr['country_code'] = 'US'
-    # County name: from seed if available
-    addr['county_name'] = seed_row['county'] if seed_row and 'county' in seed_row else None
-    # Street pre/post directional
-    pre = site_address.get('StreetPrefix')
-    addr['street_pre_directional_text'] = pre if pre in ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'] else None
-    post = site_address.get('StreetSuffixDirection')
-    addr['street_post_directional_text'] = post if post in ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'] else None
-    # Street suffix type: must be in allowed list
-    suffix = site_address.get('StreetSuffix')
-    allowed_suffixes = ["Rds", "Blvd", "Lk", "Pike", "Ky", "Vw", "Curv", "Psge", "Ldg", "Mt", "Un", "Mdw", "Via", "Cor",
-                        "Kys", "Vl", "Pr", "Cv", "Isle", "Lgt", "Hbr", "Btm", "Hl", "Mews", "Hls", "Pnes", "Lgts",
-                        "Strm", "Hwy", "Trwy", "Skwy", "Is", "Est", "Vws", "Ave", "Exts", "Cvs", "Row", "Rte", "Fall",
-                        "Gtwy", "Wls", "Clb", "Frk", "Cpe", "Fwy", "Knls", "Rdg", "Jct", "Rst", "Spgs", "Cir", "Crst",
-                        "Expy", "Smt", "Trfy", "Cors", "Land", "Uns", "Jcts", "Ways", "Trl", "Way", "Trlr", "Aly",
-                        "Spg", "Pkwy", "Cmn", "Dr", "Grns", "Oval", "Cirs", "Pt", "Shls", "Vly", "Hts", "Clf", "Flt",
-                        "Mall", "Frds", "Cyn", "Lndg", "Mdws", "Rd", "Xrds", "Ter", "Prt", "Radl", "Grvs", "Rdgs",
-                        "Inlt", "Trak", "Byu", "Vlgs", "Ctr", "Ml", "Cts", "Arc", "Bnd", "Riv", "Flds", "Mtwy", "Msn",
-                        "Shrs", "Rue", "Crse", "Cres", "Anx", "Drs", "Sts", "Holw", "Vlg", "Prts", "Sta", "Fld", "Xrd",
-                        "Wall", "Tpke", "Ft", "Bg", "Knl", "Plz", "St", "Cswy", "Bgs", "Rnch", "Frks", "Ln", "Mtn",
-                        "Ctrs", "Orch", "Iss", "Brks", "Br", "Fls", "Trce", "Park", "Gdns", "Rpds", "Shl", "Lf", "Rpd",
-                        "Lcks", "Gln", "Pl", "Path", "Vis", "Lks", "Run", "Frg", "Brg", "Sqs", "Xing", "Pln", "Glns",
-                        "Blfs", "Plns", "Dl", "Clfs", "Ext", "Pass", "Gdn", "Brk", "Grn", "Mnr", "Cp", "Pne", "Spur",
-                        "Opas", "Upas", "Tunl", "Sq", "Lck", "Ests", "Shr", "Dm", "Mls", "Wl", "Mnrs", "Stra", "Frgs",
-                        "Frst", "Flts", "Ct", "Mtns", "Frd", "Nck", "Ramp", "Vlys", "Pts", "Bch", "Loop", "Byp", "Cmns",
-                        "Fry", "Walk", "Hbrs", "Dv", "Hvn", "Blf", "Grv", "Crk"]
-    addr['street_suffix_type'] = suffix if suffix in allowed_suffixes else None
-    # These fields are not in input, set to None
-    addr['latitude'] = None
-    addr['longitude'] = None
-    addr['block'] = None
-    addr['township'] = None
-    addr['range'] = None
-    addr['section'] = None
+    # Returns dict with all address schema fields, using seed.csv first, then SiteAddress for missing fields
+    addr = {
+        'street_number': None,
+        'street_name': None,
+        'route_number': None,
+        'unit_identifier': None,
+        'postal_code': None,
+        'plus_four_postal_code': None,
+        'city_name': None,
+        'state_code': 'FL',
+        'country_code': 'US',
+        'county_name': None,
+        'street_pre_directional_text': None,
+        'street_post_directional_text': None,
+        'street_suffix_type': None,
+        'latitude': None,
+        'longitude': None,
+        'block': None,
+        'township': None,
+        'range': None,
+        'section': None
+    }
+
+    # FIRST: Parse from seed.csv if available
+    if seed_row and 'address' in seed_row:
+        seed_address = seed_row['address']
+
+        # Extract unit identifier from # symbol
+        if '#' in seed_address:
+            parts = seed_address.split('#')
+            if len(parts) > 1:
+                unit_part = parts[1].split(',')[0].strip()
+                addr['unit_identifier'] = f"#{unit_part}" if unit_part else None
+
+        # Parse full address from seed
+        addr_parts = [a.strip() for a in seed_address.split(',')]
+        if len(addr_parts) >= 1:
+            # Parse street address (before first comma)
+            street_addr = addr_parts[0]
+            # Remove unit part if it exists
+            if '#' in street_addr:
+                street_addr = street_addr.split('#')[0].strip()
+
+            address_parts = street_addr.split()
+            if address_parts and address_parts[0].isdigit():
+                addr['street_number'] = address_parts[0]
+
+                suffix_map = {
+                    "BLVD": "Blvd", "AVE": "Ave", "ST": "St", "DR": "Dr", "LN": "Ln", "RD": "Rd",
+                    "CT": "Ct", "PL": "Pl", "WAY": "Way", "CIR": "Cir", "PKWY": "Pkwy",
+                    "TRAIL": "Trl", "TER": "Ter", "PLZ": "Plz", "HWY": "Hwy", "HIGHWAY": "Hwy",
+                    "LOOP": "Loop", "BND": "Bnd", "CV": "Cv", "CRK": "Crk", "MNR": "Mnr",
+                    "TRL": "Trl", "PT": "Pt", "SQ": "Sq", "RUN": "Run", "ROW": "Row",
+                    "XING": "Xing", "WALK": "Walk", "PATH": "Path", "BCH": "Bch", "ISLE": "Isle",
+                    "PLS": "Pls", "PLN": "Pln", "PASS": "Pass", "RTE": "Rte", "EST": "Est",
+                    "ESTS": "Ests", "VLG": "Vlg", "VLGS": "Vlgs", "VILLAGE": "Vlg",
+                    "VILLAGES": "Vlgs", "COVE": "Cv", "HILL": "Hl", "HILLS": "Hls",
+                    "VIEW": "Vw", "VIEWS": "Vws", "COURT": "Ct", "CRES": "Cres",
+                    "CRESCENT": "Cres", "GROVE": "Grv", "GROVES": "Grvs", "MEADOW": "Mdw",
+                    "MEADOWS": "Mdws", "RIDGE": "Rdg", "RIDGES": "Rdgs", "TERRACE": "Ter",
+                    "TERR": "Ter", "PARK": "Park", "PARKWAY": "Pkwy", "CROSSING": "Xing",
+                    "CROSSINGS": "Xing", "LANDING": "Lndg", "LANDINGS": "Lndg", "GLEN": "Gln",
+                    "GLENS": "Glns", "LAKE": "Lk", "LAKES": "Lks", "CREEK": "Crk",
+                    "CREEKS": "Crk", "BAY": "Bay", "BAYS": "Bay", "POINT": "Pt",
+                    "POINTS": "Pt", "SHORE": "Shr", "SHORES": "Shrs", "WOOD": "Wd",
+                    "WOODS": "Wds", "FOREST": "Frst", "FORESTS": "Frst", "ESTATE": "Est",
+                    "ESTATES": "Ests", "MOUNT": "Mt", "MOUNTAIN": "Mtn", "MOUNTAINS": "Mtns",
+                    "CAMP": "Cp", "CAMPS": "Cp", "CAMPUS": "Cp", "CENTER": "Ctr",
+                    "CENTERS": "Ctrs", "PLAZA": "Plz", "PLAZAS": "Plz", "SQUARE": "Sq",
+                    "SQUARES": "Sqs", "STREET": "St", "AVENUE": "Ave", "DRIVE": "Dr",
+                    "ROAD": "Rd", "LANE": "Ln", "PLACE": "Pl", "CIRCLE": "Cir",
+                    "BEND": "Bnd", "ROADS": "Rds", "PIKE": "Pike", "KEY": "Ky",
+                    "CURVE": "Curv", "PASSAGE": "Psge", "LODGE": "Ldg", "UNION": "Un",
+                    "KEYS": "Kys", "VALLEY": "Vl", "PRAIRIE": "Pr", "LIGHT": "Lgt",
+                    "HARBOR": "Hbr", "BOTTOM": "Btm", "PINES": "Pnes", "LIGHTS": "Lgts",
+                    "STREAM": "Strm", "THROUGHWAY": "Trwy", "SKYWAY": "Skwy", "ISLAND": "Is",
+                    "EXTENSIONS": "Exts", "COVES": "Cvs", "ROUTE": "Rte", "FALLS": "Fall",
+                    "GATEWAY": "Gtwy", "WELLS": "Wls", "CLUB": "Clb", "FORK": "Frk",
+                    "CAPE": "Cpe", "FREEWAY": "Fwy", "KNOLLS": "Knls", "JUNCTION": "Jct",
+                    "REST": "Rst", "SPRINGS": "Spgs", "CREST": "Crst", "EXPRESSWAY": "Expy",
+                    "SUMMIT": "Smt", "TRAFFICWAY": "Trfy", "CORNERS": "Cors", "UNIONS": "Uns",
+                    "JUNCTIONS": "Jcts", "WAYS": "Ways", "TRAIL": "Trl", "TRAILER": "Trlr",
+                    "ALLEY": "Aly", "SPRING": "Spg", "COMMON": "Cmn", "GREENS": "Grns",
+                    "CIRCLES": "Cirs", "SHOALS": "Shls", "VALLEY": "Vly", "HEIGHTS": "Hts",
+                    "CLIFF": "Clf", "FLAT": "Flt", "FORDS": "Frds", "CANYON": "Cyn",
+                    "MILL": "Ml", "COURTS": "Cts", "ARCADE": "Arc", "RIVER": "Riv",
+                    "FIELDS": "Flds", "MOTORWAY": "Mtwy", "MISSION": "Msn", "SHORES": "Shrs",
+                    "COURSE": "Crse", "ANNEX": "Anx", "DRIVES": "Drs", "STREETS": "Sts",
+                    "HOLLOW": "Holw", "VILLAGES": "Vlgs", "PORTS": "Prts", "STATION": "Sta",
+                    "FIELD": "Fld", "CROSSROAD": "Xrd", "TURNPIKE": "Tpke", "FORT": "Ft",
+                    "BUG": "Bg", "KNOLL": "Knl", "CAUSEWAY": "Cswy", "BUGS": "Bgs",
+                    "RANCH": "Rnch", "FORKS": "Frks", "MOUNTAIN": "Mtn", "CENTERS": "Ctrs",
+                    "ORCHARD": "Orch", "ISLANDS": "Iss", "BROOKS": "Brks", "BRIDGE": "Br",
+                    "TRACE": "Trce", "GARDENS": "Gdns", "RAPIDS": "Rpds", "SHOAL": "Shl",
+                    "LOAF": "Lf", "RAPID": "Rpd", "LOCKS": "Lcks", "PLAINS": "Plns",
+                    "DALE": "Dl", "CLIFFS": "Clfs", "EXTENSION": "Ext", "GARDEN": "Gdn",
+                    "BROOK": "Brk", "GREEN": "Grn", "MANOR": "Mnr", "CAMP": "Cp",
+                    "PINE": "Pne", "OVERPASS": "Opas", "UNDERPASS": "Upas", "TUNNEL": "Tunl",
+                    "LOCK": "Lck", "SHORE": "Shr", "DAM": "Dm", "MILLS": "Mls",
+                    "WELL": "Wl", "MANORS": "Mnrs", "STRAVENUE": "Stra", "FORGES": "Frgs",
+                    "FOREST": "Frst", "FLATS": "Flts", "FORD": "Frd", "NECK": "Nck",
+                    "RAMP": "Ramp", "VALLEYS": "Vlys", "POINTS": "Pts", "BEACH": "Bch",
+                    "BYPASS": "Byp", "COMMONS": "Cmns", "FERRY": "Fry", "HARBORS": "Hbrs",
+                    "DIVIDE": "Dv", "HAVEN": "Hvn", "BLUFF": "Blf", "GROVE": "Grv"
+                }
+
+                # Find suffix
+                suffix_idx = None
+                for i in range(len(address_parts) - 1, 0, -1):
+                    part = address_parts[i].upper().replace(",", "")
+                    if part in suffix_map:
+                        addr['street_suffix_type'] = suffix_map[part]
+                        suffix_idx = i
+                        break
+
+                # Handle directionals and extract route number
+                directionals = {"N", "S", "E", "W", "NE", "NW", "SE", "SW"}
+                street_name_parts = []
+                remaining_parts = address_parts[1:]  # Everything after street number
+
+                for idx, part in enumerate(remaining_parts):
+                    up = part.upper()
+                    if up in directionals:
+                        if idx == 0:  # First part is pre-directional
+                            addr['street_pre_directional_text'] = up
+                        elif idx == len(remaining_parts) - 1:  # Last part might be post-directional
+                            addr['street_post_directional_text'] = up
+                        else:
+                            street_name_parts.append(part)
+                    elif part.isdigit():
+                        # This is likely a route number (like "1" in "US Hwy 1")
+                        addr['route_number'] = part
+                    elif up in suffix_map:
+                        continue
+                    else:
+                        street_name_parts.append(part)
+
+                addr['street_name'] = " ".join(street_name_parts) if street_name_parts else None
+
+        # Parse city
+        if len(addr_parts) >= 2:
+            addr['city_name'] = addr_parts[1].strip().upper()
+
+        # Parse state and zip
+        if len(addr_parts) >= 3:
+            state_zip = addr_parts[2].split()
+            if len(state_zip) >= 2:
+                addr['postal_code'] = state_zip[1][:5]
+            if len(state_zip) >= 3:
+                plus4 = state_zip[2]
+                if len(plus4) == 4 and plus4.isdigit():
+                    addr['plus_four_postal_code'] = plus4
+
+        # County from seed
+        if 'county' in seed_row:
+            addr['county_name'] = seed_row['county'].upper()
+
+    # SECOND: Fill missing fields from SiteAddress if seed.csv didn't provide them
+    if not addr['street_number']:
+        snum = site_address.get('StreetNumber')
+        addr['street_number'] = str(snum) if snum is not None and str(snum).strip() else None
+
+    if not addr['street_name']:
+        sname = site_address.get('StreetName')
+        addr['street_name'] = sname if sname else None
+
+    if not addr['unit_identifier']:
+        unit = site_address.get('Unit')
+        addr['unit_identifier'] = unit if unit else None
+
+    if not addr['postal_code']:
+        zip_code = site_address.get('Zip')
+        if zip_code and '-' in zip_code:
+            base, plus4 = zip_code.split('-', 1)
+            addr['postal_code'] = base
+            addr['plus_four_postal_code'] = plus4
+        elif zip_code:
+            addr['postal_code'] = zip_code
+
+    if not addr['city_name']:
+        city = site_address.get('City')
+        addr['city_name'] = city.upper() if city else None
+
+    if not addr['street_pre_directional_text']:
+        pre = site_address.get('StreetPrefix')
+        addr['street_pre_directional_text'] = pre if pre in ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'] else None
+
+    if not addr['street_post_directional_text']:
+        post = site_address.get('StreetSuffixDirection')
+        addr['street_post_directional_text'] = post if post in ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'] else None
+
+    if not addr['street_suffix_type']:
+        suffix = site_address.get('StreetSuffix')
+        allowed_suffixes = ["Rds", "Blvd", "Lk", "Pike", "Ky", "Vw", "Curv", "Psge", "Ldg", "Mt", "Un", "Mdw", "Via",
+                            "Cor",
+                            "Kys", "Vl", "Pr", "Cv", "Isle", "Lgt", "Hbr", "Btm", "Hl", "Mews", "Hls", "Pnes", "Lgts",
+                            "Strm", "Hwy", "Trwy", "Skwy", "Is", "Est", "Vws", "Ave", "Exts", "Cvs", "Row", "Rte",
+                            "Fall",
+                            "Gtwy", "Wls", "Clb", "Frk", "Cpe", "Fwy", "Knls", "Rdg", "Jct", "Rst", "Spgs", "Cir",
+                            "Crst",
+                            "Expy", "Smt", "Trfy", "Cors", "Land", "Uns", "Jcts", "Ways", "Trl", "Way", "Trlr", "Aly",
+                            "Spg", "Pkwy", "Cmn", "Dr", "Grns", "Oval", "Cirs", "Pt", "Shls", "Vly", "Hts", "Clf",
+                            "Flt",
+                            "Mall", "Frds", "Cyn", "Lndg", "Mdws", "Rd", "Xrds", "Ter", "Prt", "Radl", "Grvs", "Rdgs",
+                            "Inlt", "Trak", "Byu", "Vlgs", "Ctr", "Ml", "Cts", "Arc", "Bnd", "Riv", "Flds", "Mtwy",
+                            "Msn",
+                            "Shrs", "Rue", "Crse", "Cres", "Anx", "Drs", "Sts", "Holw", "Vlg", "Prts", "Sta", "Fld",
+                            "Xrd",
+                            "Wall", "Tpke", "Ft", "Bg", "Knl", "Plz", "St", "Cswy", "Bgs", "Rnch", "Frks", "Ln", "Mtn",
+                            "Ctrs", "Orch", "Iss", "Brks", "Br", "Fls", "Trce", "Park", "Gdns", "Rpds", "Shl", "Lf",
+                            "Rpd",
+                            "Lcks", "Gln", "Pl", "Path", "Vis", "Lks", "Run", "Frg", "Brg", "Sqs", "Xing", "Pln",
+                            "Glns",
+                            "Blfs", "Plns", "Dl", "Clfs", "Ext", "Pass", "Gdn", "Brk", "Grn", "Mnr", "Cp", "Pne",
+                            "Spur",
+                            "Opas", "Upas", "Tunl", "Sq", "Lck", "Ests", "Shr", "Dm", "Mls", "Wl", "Mnrs", "Stra",
+                            "Frgs",
+                            "Frst", "Flts", "Ct", "Mtns", "Frd", "Nck", "Ramp", "Vlys", "Pts", "Bch", "Loop", "Byp",
+                            "Cmns",
+                            "Fry", "Walk", "Hbrs", "Dv", "Hvn", "Blf", "Grv", "Crk"]
+        addr['street_suffix_type'] = suffix if suffix in allowed_suffixes else None
+
     return addr
 
 
@@ -390,7 +549,9 @@ def main():
         write_json(os.path.join(out_dir, 'property.json'), prop)
         # Address
         site_addr = input_data.get('SiteAddress', [{}])[0]
+        print(site_addr)
         seed_row = seed_map.get(parcel_id)
+        print(seed_row)
         addr = parse_address_components(site_addr, seed_row)
         addr['source_http_request'] = {'method': 'GET', 'url': f'https://property-data.local/property/{parcel_id}'}
         addr['request_identifier'] = parcel_id

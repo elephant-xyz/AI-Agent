@@ -2,6 +2,7 @@ import os
 import json
 from typing import Dict, Any
 
+
 def extract_layout_from_property(property_json: Dict[str, Any], property_id: str) -> Dict[str, Any]:
     source_http_request = {
         "method": "GET",
@@ -9,12 +10,14 @@ def extract_layout_from_property(property_json: Dict[str, Any], property_id: str
     }
     property_info = property_json.get('PropertyInfo', {})
     layouts = []
+
     # Extract bedrooms
-    for _ in range(property_info.get('BedroomCount', 0)):
+    for i in range(property_info.get('BedroomCount', 0)):
         layouts.append({
             "source_http_request": source_http_request,
             "request_identifier": property_id,
             "space_type": "Bedroom",
+            "space_index": i + 1,  # Add space_index starting from 1
             "flooring_material_type": None,
             "size_square_feet": None,
             "floor_level": None,
@@ -46,12 +49,14 @@ def extract_layout_from_property(property_json: Dict[str, Any], property_id: str
             "pool_surface_type": None,
             "pool_water_quality": None
         })
+
     # Extract full bathrooms
-    for _ in range(property_info.get('BathroomCount', 0)):
+    for i in range(property_info.get('BathroomCount', 0)):
         layouts.append({
             "source_http_request": source_http_request,
             "request_identifier": property_id,
             "space_type": "Full Bathroom",
+            "space_index": i + 1,  # Add space_index starting from 1
             "flooring_material_type": None,
             "size_square_feet": None,
             "floor_level": None,
@@ -83,12 +88,14 @@ def extract_layout_from_property(property_json: Dict[str, Any], property_id: str
             "pool_surface_type": None,
             "pool_water_quality": None
         })
+
     # Extract half bathrooms
-    for _ in range(property_info.get('HalfBathroomCount', 0)):
+    for i in range(property_info.get('HalfBathroomCount', 0)):
         layouts.append({
             "source_http_request": source_http_request,
             "request_identifier": property_id,
             "space_type": "Half Bathroom / Powder Room",
+            "space_index": i + 1,  # Add space_index starting from 1
             "flooring_material_type": None,
             "size_square_feet": None,
             "floor_level": None,
@@ -120,7 +127,9 @@ def extract_layout_from_property(property_json: Dict[str, Any], property_id: str
             "pool_surface_type": None,
             "pool_water_quality": None
         })
+
     return {"layouts": layouts}
+
 
 def main():
     input_dir = './input'
@@ -136,6 +145,7 @@ def main():
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, 'w') as f:
         json.dump(result, f, indent=2)
+
 
 if __name__ == '__main__':
     main()
