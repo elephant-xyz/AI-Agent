@@ -225,7 +225,7 @@ def extract_tax(input_data, parcel_id):
 
 
 def extract_owners_and_relationships(parcel_id, owners_schema, sales):
-    # Returns: list of person/company dicts, list of relationship dicts
+    # Returns: list of person dicts, list of company dicts, list of relationship dicts
     persons = []
     companies = []
     relationships = []
@@ -236,7 +236,7 @@ def extract_owners_and_relationships(parcel_id, owners_schema, sales):
 
     owners_by_date = owners_schema[property_key].get('owners_by_date', {})
 
-    # Helper function to create person objects
+    # Helper functions to create person and company objects
     def create_person(owner, parcel_id):
         def fix_name(val):
             if not val or not isinstance(val, str):
@@ -248,53 +248,31 @@ def extract_owners_and_relationships(parcel_id, owners_schema, sales):
             parts = val.split()
             return ' '.join([p.capitalize() for p in parts])
 
-        if owner['type'] == 'person':
-            return {
-                'source_http_request': {
-                    'method': 'GET',
-                    'url': f'https://property-data.local/property/{parcel_id}'
-                },
-                'request_identifier': parcel_id,
-                'birth_date': None,
-                'first_name': fix_name(owner.get('first_name')) or 'Unknown',
-                'last_name': fix_name(owner.get('last_name')) or 'Unknown',
-                'middle_name': fix_name(owner.get('middle_name')) if owner.get('middle_name') else None,
-                'prefix_name': None,
-                'suffix_name': None,
-                'us_citizenship_status': None,
-                'veteran_status': None
-            }
-        elif owner['type'] == 'company':
-            # Convert company to person-like object for schema compliance
-            def company_first_name(name):
-                if not name or not isinstance(name, str):
-                    return 'Unknown'
-                import re
-                # Remove non-alpha characters but preserve spaces, then clean up
-                cleaned = re.sub(r'[^A-Za-z\s]', '', name)
-                # Remove extra spaces and split into words
-                words = cleaned.split()
-                if not words:
-                    return 'Unknown'
-                # Take first few words and capitalize properly
-                result_words = words[:3]  # Limit to first 3 words
-                return ' '.join([word.capitalize() for word in result_words])
+        return {
+            'source_http_request': {
+                'method': 'GET',
+                'url': f'https://property-data.local/property/{parcel_id}'
+            },
+            'request_identifier': parcel_id,
+            'birth_date': None,
+            'first_name': fix_name(owner.get('first_name')) or 'Unknown',
+            'last_name': fix_name(owner.get('last_name')) or 'Unknown',
+            'middle_name': fix_name(owner.get('middle_name')) if owner.get('middle_name') else None,
+            'prefix_name': None,
+            'suffix_name': None,
+            'us_citizenship_status': None,
+            'veteran_status': None
+        }
 
-            return {
-                'source_http_request': {
-                    'method': 'GET',
-                    'url': f'https://property-data.local/property/{parcel_id}'
-                },
-                'request_identifier': parcel_id,
-                'birth_date': None,
-                'first_name': company_first_name(owner.get('name')),
-                'last_name': 'Company',
-                'middle_name': None,
-                'prefix_name': None,
-                'suffix_name': None,
-                'us_citizenship_status': None,
-                'veteran_status': None
-            }
+    def create_company(owner, parcel_id):
+        return {
+            'source_http_request': {
+                'method': 'GET',
+                'url': f'https://property-data.local/property/{parcel_id}'
+            },
+            'request_identifier': parcel_id,
+            'name': owner.get('name', 'Unknown Company').strip()
+        }
 
     # Create a mapping of sale dates to sale indices
     sale_date_to_index = {}
@@ -303,8 +281,8 @@ def extract_owners_and_relationships(parcel_id, owners_schema, sales):
             sale_date_to_index[sale['ownership_transfer_date']] = idx + 1
 
     # Process each ownership period
-    all_owners = set()  # To avoid duplicate persons
-    owner_to_person_idx = {}  # Map owner info to person index
+    all_owners = set()  # To avoid duplicate persons/companies
+    owner_to_index = {}  # Map owner info to person/company index and type
 
     for date_key, owners in owners_by_date.items():
         if date_key == 'current':
@@ -318,23 +296,35 @@ def extract_owners_and_relationships(parcel_id, owners_schema, sales):
         for owner in owners:
             # Create a unique key for this owner
             if owner['type'] == 'person':
-                owner_key = f"{owner.get('first_name', '')}-{owner.get('last_name', '')}-{owner.get('middle_name', '')}"
+                owner_key = f"person-{owner.get('first_name', '')}-{owner.get('last_name', '')}-{owner.get('middle_name', '')}"
             else:
                 owner_key = f"company-{owner.get('name', '')}"
 
-            # Only create person if we haven't seen this owner before
+            # Only create person/company if we haven't seen this owner before
             if owner_key not in all_owners:
                 all_owners.add(owner_key)
-                person = create_person(owner, parcel_id)
-                persons.append(person)
-                owner_to_person_idx[owner_key] = len(persons)
+
+                if owner['type'] == 'person':
+                    person = create_person(owner, parcel_id)
+                    persons.append(person)
+                    owner_to_index[owner_key] = {'type': 'person', 'index': len(persons)}
+                else:
+                    company = create_company(owner, parcel_id)
+                    companies.append(company)
+                    owner_to_index[owner_key] = {'type': 'company', 'index': len(companies)}
 
             # Create relationship between this owner and the sale
-            person_idx = owner_to_person_idx[owner_key]
-            relationships.append({
-                'to': {'/': f'./person_{person_idx}.json'},
-                'from': {'/': f'./sales_{sale_idx}.json'}
-            })
+            owner_info = owner_to_index[owner_key]
+            if owner_info['type'] == 'person':
+                relationships.append({
+                    'to': {'/': f'./person_{owner_info["index"]}.json'},
+                    'from': {'/': f'./sales_{sale_idx}.json'}
+                })
+            else:
+                relationships.append({
+                    'to': {'/': f'./company_{owner_info["index"]}.json'},
+                    'from': {'/': f'./sales_{sale_idx}.json'}
+                })
 
     # Handle current owners (if no sales match, create relationships to most recent sale)
     current_owners = owners_by_date.get('current', [])
@@ -344,23 +334,35 @@ def extract_owners_and_relationships(parcel_id, owners_schema, sales):
 
         for owner in current_owners:
             if owner['type'] == 'person':
-                owner_key = f"{owner.get('first_name', '')}-{owner.get('last_name', '')}-{owner.get('middle_name', '')}"
+                owner_key = f"person-{owner.get('first_name', '')}-{owner.get('last_name', '')}-{owner.get('middle_name', '')}"
             else:
                 owner_key = f"company-{owner.get('name', '')}"
 
-            # Only create person if we haven't seen this owner before
+            # Only create person/company if we haven't seen this owner before
             if owner_key not in all_owners:
                 all_owners.add(owner_key)
-                person = create_person(owner, parcel_id)
-                persons.append(person)
-                owner_to_person_idx[owner_key] = len(persons)
+
+                if owner['type'] == 'person':
+                    person = create_person(owner, parcel_id)
+                    persons.append(person)
+                    owner_to_index[owner_key] = {'type': 'person', 'index': len(persons)}
+                else:
+                    company = create_company(owner, parcel_id)
+                    companies.append(company)
+                    owner_to_index[owner_key] = {'type': 'company', 'index': len(companies)}
 
             # Create relationship between current owner and most recent sale
-            person_idx = owner_to_person_idx[owner_key]
-            relationships.append({
-                'to': {'/': f'./person_{person_idx}.json'},
-                'from': {'/': f'./sales_{most_recent_sale_idx}.json'}
-            })
+            owner_info = owner_to_index[owner_key]
+            if owner_info['type'] == 'person':
+                relationships.append({
+                    'to': {'/': f'./person_{owner_info["index"]}.json'},
+                    'from': {'/': f'./sales_{most_recent_sale_idx}.json'}
+                })
+            else:
+                relationships.append({
+                    'to': {'/': f'./company_{owner_info["index"]}.json'},
+                    'from': {'/': f'./sales_{most_recent_sale_idx}.json'}
+                })
 
     return persons, companies, relationships
 
@@ -441,8 +443,27 @@ def main():
             write_json(os.path.join(out_dir, f'person_{idx}.json'), person)
         for idx, company in enumerate(companies, 1):
             write_json(os.path.join(out_dir, f'company_{idx}.json'), company)
+
+        # Write relationships with proper naming
         for idx, rel in enumerate(relationships, 1):
-            write_json(os.path.join(out_dir, f'relationship_sales_person_{idx}.json'), rel)
+            # Extract sale and entity info from the relationship
+            from_path = rel['from']['/']  # e.g., "./sales_1.json"
+            to_path = rel['to']['/']  # e.g., "./person_1.json" or "./company_1.json"
+
+            # Extract numbers
+            sale_num = from_path.split('_')[1].split('.')[0]  # Extract "1" from "./sales_1.json"
+
+            if 'person_' in to_path:
+                entity_num = to_path.split('_')[1].split('.')[0]  # Extract "1" from "./person_1.json"
+                filename = f'relationship_sales_{sale_num}_person_{entity_num}.json'
+            elif 'company_' in to_path:
+                entity_num = to_path.split('_')[1].split('.')[0]  # Extract "1" from "./company_1.json"
+                filename = f'relationship_sales_{sale_num}_company_{entity_num}.json'
+            else:
+                # Fallback to generic naming
+                filename = f'relationship_{idx}.json'
+
+            write_json(os.path.join(out_dir, filename), rel)
 
 
 if __name__ == '__main__':

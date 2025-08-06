@@ -9,7 +9,7 @@ def parse_owner_name(name):
         'INC', 'LLC', 'LTD', 'CORP', 'CO', 'FOUNDATION', 'ALLIANCE', 'SOLUTIONS', 'SERVICES', 'SYSTEMS', 'COUNCIL',
         'VETERANS', 'FIRST RESPONDERS', 'HEROES', 'INITIATIVE', 'ASSOCIATION', 'GROUP', 'TRUST', 'PARTNERS',
         'PROPERTIES', 'HOLDINGS', 'ENTERPRISES', 'INVESTMENTS', 'FUND', 'BANK', 'SAVINGS', 'MORTGAGE', 'REALTY',
-        'COMPANY', 'LP', 'LLP', 'PLC', 'PC', 'PLLC', 'P.A.', 'P.C.'
+        'COMPANY', 'LP', 'LLP', 'PLC', 'PC', 'PLLC', 'P.A.', 'P.C.', "TR", "Tr"
     ]
     if not name or not name.strip():
         return None
@@ -84,6 +84,9 @@ def main():
 
         owners_by_date = {}
 
+        # Collect all grantee names from sales to avoid duplicates
+        all_grantee_names = set()
+
         # Previous owners by sale date - using GRANTEES (buyers)
         if 'SalesInfos' in data:
             # Sort sales by date to get chronological order
@@ -108,6 +111,7 @@ def main():
                 for key in ['GranteeName1', 'GranteeName2']:
                     grantee_name = sale.get(key, '')
                     if grantee_name and grantee_name.strip():  # Only process non-empty names
+                        all_grantee_names.add(grantee_name.strip().upper())  # Track all grantee names
                         parsed = parse_owner_name(grantee_name)
                         if parsed:
                             sale_owners.append(parsed)
@@ -115,7 +119,49 @@ def main():
                 if sale_owners:
                     owners_by_date[iso_date] = sale_owners
 
-        # Remove the optional grantor tracking section to keep it simple
+        # Add current owners from OwnerInfos if they're not already in sales
+        current_owners = []
+        latest_sale_date = None
+
+        if 'OwnerInfos' in data:
+            # Find the latest sale date if any sales exist
+            if 'SalesInfos' in data and data['SalesInfos']:
+                # Get the most recent sale date
+                sales = sorted(data['SalesInfos'],
+                               key=lambda x: datetime.strptime(x.get('DateOfSale', '01/01/1900'), '%m/%d/%Y')
+                               if x.get('DateOfSale') else datetime(1900, 1, 1),
+                               reverse=True)
+                if sales and sales[0].get('DateOfSale'):
+                    try:
+                        latest_sale_date = datetime.strptime(sales[0]['DateOfSale'], '%m/%d/%Y').strftime('%Y-%m-%d')
+                    except Exception:
+                        pass
+
+            # Process current owners
+            for owner in data['OwnerInfos']:
+                owner_name = owner.get('Name', '')
+                if owner_name and owner_name.strip():
+                    # Check if this owner name is already in the grantees
+                    if owner_name.strip().upper() not in all_grantee_names:
+                        parsed = parse_owner_name(owner_name)
+                        if parsed:
+                            current_owners.append(parsed)
+
+        if current_owners:
+            if latest_sale_date:
+                # Check if this date already has owners from sales
+                if latest_sale_date in owners_by_date:
+                    # Extend the existing list with current owners
+                    owners_by_date[latest_sale_date].extend(current_owners)
+                else:
+                    # Create new entry for this date
+                    owners_by_date[latest_sale_date] = current_owners
+            else:
+                # If no sales, use current date or a default
+                from datetime import date
+                current_date = date.today().strftime('%Y-%m-%d')
+                owners_by_date[current_date] = current_owners
+
         schema[f'property_{property_id}'] = {'owners_by_date': owners_by_date}
 
     # Write outputs
