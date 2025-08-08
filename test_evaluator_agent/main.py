@@ -12,6 +12,7 @@ import tempfile
 import hashlib
 import shutil
 import subprocess
+import zipfile
 from typing import Dict, Any, List, TypedDict, Set, Optional
 import pandas as pd
 import threading
@@ -290,7 +291,174 @@ def parse_arguments():
         action='store_true',
         help='Run in simple mode: download scripts → run scripts → CLI validation (no AI agents)'
     )
+    parser.add_argument(
+        '--input-zip',
+        type=str,
+        help='Path to input zip archive containing seed.csv, input/, and upload-results.csv'
+    )
     return parser.parse_args()
+
+
+def extract_and_validate_input_zip(zip_path: str) -> bool:
+    """
+    Extract and validate the input zip archive.
+    
+    The zip should contain:
+    - seed.csv (with exactly 1 record)
+    - input/ folder (with exactly 1 file)
+    - upload-results.csv (with 1 or more records for the same propertyHash)
+    
+    Returns True if extraction and validation successful, False otherwise.
+    """
+    logger.info(f"📦 Extracting input zip: {zip_path}")
+    
+    if not os.path.exists(zip_path):
+        logger.error(f"❌ Input zip file not found: {zip_path}")
+        return False
+    
+    # Clean up existing directories if they exist
+    for path in ['seed.csv', 'upload-results.csv', 'input']:
+        if os.path.exists(path):
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            logger.info(f"🧹 Cleaned up existing {path}")
+    
+    try:
+        # Extract the zip file
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(BASE_DIR)
+            logger.info(f"✅ Extracted zip contents to {BASE_DIR}")
+            
+            # List extracted files
+            extracted_files = zip_ref.namelist()
+            logger.info(f"📋 Extracted files: {extracted_files}")
+    except Exception as e:
+        logger.error(f"❌ Failed to extract zip: {e}")
+        return False
+    
+    # Validate seed.csv
+    seed_path = os.path.join(BASE_DIR, 'seed.csv')
+    if not os.path.exists(seed_path):
+        logger.error("❌ seed.csv not found in extracted archive")
+        return False
+    
+    try:
+        seed_df = pd.read_csv(seed_path, dtype={'parcel_id': str, 'source_identifier': str})
+        if len(seed_df) != 1:
+            logger.error(f"❌ seed.csv must contain exactly 1 record, found {len(seed_df)}")
+            return False
+        logger.info("✅ seed.csv validated: 1 record found")
+        parcel_id = seed_df['parcel_id'].iloc[0]
+        logger.info(f"📍 Processing property with parcel_id: {parcel_id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to read seed.csv: {e}")
+        return False
+    
+    # Validate input folder
+    input_dir = os.path.join(BASE_DIR, 'input')
+    if not os.path.exists(input_dir):
+        logger.error("❌ input/ folder not found in extracted archive")
+        return False
+    
+    input_files = [f for f in os.listdir(input_dir) if f.endswith(('.html', '.json'))]
+    if len(input_files) != 1:
+        logger.error(f"❌ input/ folder must contain exactly 1 file (.html or .json), found {len(input_files)}")
+        return False
+    logger.info(f"✅ input/ folder validated: 1 file found ({input_files[0]})")
+    
+    # Validate upload-results.csv
+    upload_path = os.path.join(BASE_DIR, 'upload-results.csv')
+    if not os.path.exists(upload_path):
+        logger.error("❌ upload-results.csv not found in extracted archive")
+        return False
+    
+    try:
+        upload_df = pd.read_csv(upload_path)
+        if 'propertyHash' not in upload_df.columns:
+            logger.error("❌ upload-results.csv must contain 'propertyHash' column")
+            return False
+        
+        # Check that all records have the same propertyHash
+        unique_hashes = upload_df['propertyHash'].unique()
+        if len(unique_hashes) != 1:
+            logger.error(f"❌ upload-results.csv must contain records for only 1 propertyHash, found {len(unique_hashes)}")
+            return False
+        
+        logger.info(f"✅ upload-results.csv validated: {len(upload_df)} records for propertyHash: {unique_hashes[0]}")
+    except Exception as e:
+        logger.error(f"❌ Failed to read upload-results.csv: {e}")
+        return False
+    
+    logger.info("✅ Input zip validation successful")
+    return True
+
+
+def create_output_zip(submit_dir: str = "submit") -> bool:
+    """
+    Create a zip archive from the submit directory.
+    
+    Args:
+        submit_dir: Path to the submit directory to zip
+    
+    Returns:
+        True if zip creation successful, False otherwise
+    """
+    output_zip_path = os.path.join(BASE_DIR, "submit.zip")
+    
+    # Remove existing zip if it exists
+    if os.path.exists(output_zip_path):
+        os.remove(output_zip_path)
+        logger.info(f"🧹 Removed existing {output_zip_path}")
+    
+    if not os.path.exists(submit_dir):
+        logger.error(f"❌ Submit directory not found: {submit_dir}")
+        return False
+    
+    try:
+        # Get all folders in submit directory
+        submit_folders = [f for f in os.listdir(submit_dir) 
+                         if os.path.isdir(os.path.join(submit_dir, f))]
+        
+        if len(submit_folders) != 1:
+            logger.warning(f"⚠️ Expected 1 folder in submit/, found {len(submit_folders)}")
+        
+        # Create zip archive
+        with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # For single property processing, we add contents directly without nested folder
+            if len(submit_folders) == 1:
+                folder_path = os.path.join(submit_dir, submit_folders[0])
+                for root, dirs, files in os.walk(folder_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        # Calculate relative path from the property folder
+                        arcname = os.path.relpath(file_path, folder_path)
+                        zipf.write(file_path, arcname)
+                        logger.info(f"📦 Added {arcname} to zip")
+            else:
+                # Fallback: add all contents as-is
+                for root, dirs, files in os.walk(submit_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, submit_dir)
+                        zipf.write(file_path, arcname)
+        
+        # Get zip file size
+        zip_size = os.path.getsize(output_zip_path) / 1024 / 1024  # Convert to MB
+        logger.info(f"✅ Created output zip: {output_zip_path} ({zip_size:.2f} MB)")
+        print_status(f"Output zip created: submit.zip ({zip_size:.2f} MB)")
+        
+        # Clean up submit directory after creating zip
+        if os.path.exists(submit_dir):
+            shutil.rmtree(submit_dir)
+            logger.info(f"🧹 Cleaned up {submit_dir} directory")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to create output zip: {e}")
+        return False
 
 
 async def run_simple_workflow():
@@ -3185,20 +3353,44 @@ async def main(args=None):
     """Main entry point with argument parsing"""
     if args is None:
         args = parse_arguments()
-    elif not hasattr(args, 'transform'):
-        # Convert from namespace to have transform attribute
+    elif not hasattr(args, 'transform') or not hasattr(args, 'input_zip'):
+        # Convert from namespace to have all attributes
         import argparse
         new_args = argparse.Namespace()
         new_args.transform = getattr(args, 'transform', False)
+        new_args.input_zip = getattr(args, 'input_zip', None)
         args = new_args
 
     try:
+        # Handle input zip extraction if provided
+        if hasattr(args, 'input_zip') and args.input_zip:
+            logger.info(f"📦 Processing with input zip: {args.input_zip}")
+            print_status(f"Processing input archive: {args.input_zip}")
+            
+            if not extract_and_validate_input_zip(args.input_zip):
+                logger.error("Failed to extract and validate input zip")
+                sys.exit(1)
+        
+        # Run the appropriate workflow
+        success = False
         if args.transform:
             success = await run_simple_workflow()
-            if not success:
-                sys.exit(1)
         else:
+            # run_three_node_workflow doesn't return a value, so we assume success
             await run_three_node_workflow()
+            success = True
+        
+        # Create output zip if workflow was successful  
+        if success and hasattr(args, 'input_zip') and args.input_zip:
+            logger.info("Creating output zip archive...")
+            if create_output_zip():
+                print_status("✅ Workflow completed successfully. Output: submit.zip")
+            else:
+                logger.error("Failed to create output zip")
+                sys.exit(1)
+        elif not success:
+            sys.exit(1)
+                
     except Exception as e:
         logger.error(f"Processing failed: {e}")
         sys.exit(1)

@@ -13,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description="Test Evaluator Agent")
     parser.add_argument("--setup", action="store_true", help="Setup UV venv and mcp_code_executor dependencies")
     parser.add_argument("--transform", action="store_true", help="Run in simple mode: download scripts → run scripts → CLI validation (no AI agents)")
+    parser.add_argument("--input-zip", type=str, help="Path to input zip archive containing seed.csv, input/, and upload-results.csv")
 
     args = parser.parse_args()
 
