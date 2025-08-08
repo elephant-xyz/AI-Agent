@@ -316,7 +316,7 @@ def extract_and_validate_input_zip(zip_path: str) -> bool:
     The zip should contain:
     - seed.csv (with exactly 1 record)
     - input/ folder (with exactly 1 file)
-    - upload-results.csv (with 1 or more records for the same propertyHash)
+    - upload-results.csv (with 1 or more records for the same propertyCid)
     
     Returns True if extraction and validation successful, False otherwise.
     """
@@ -442,21 +442,21 @@ def extract_and_validate_input_zip(zip_path: str) -> bool:
     
     try:
         upload_df = pd.read_csv(upload_path)
-        if 'propertyHash' not in upload_df.columns:
-            error_msg = "upload-results.csv must contain 'propertyHash' column"
+        if 'propertyCid' not in upload_df.columns:
+            error_msg = "upload-results.csv must contain 'propertyCid' column"
             logger.error(f"❌ {error_msg}")
             print_status(f"ERROR: {error_msg}")
             return False
         
-        # Check that all records have the same propertyHash
-        unique_hashes = upload_df['propertyHash'].unique()
+        # Check that all records have the same propertyCid
+        unique_hashes = upload_df['propertyCid'].unique()
         if len(unique_hashes) != 1:
-            error_msg = f"upload-results.csv must contain records for only 1 propertyHash, found {len(unique_hashes)}"
+            error_msg = f"upload-results.csv must contain records for only 1 propertyCid, found {len(unique_hashes)}"
             logger.error(f"❌ {error_msg}")
             print_status(f"ERROR: {error_msg}")
             return False
         
-        logger.info(f"✅ upload-results.csv validated: {len(upload_df)} records for propertyHash: {unique_hashes[0]}")
+        logger.info(f"✅ upload-results.csv validated: {len(upload_df)} records for propertyCid: {unique_hashes[0]}")
     except Exception as e:
         error_msg = f"Failed to read upload-results.csv: {e}"
         logger.error(f"❌ {error_msg}")
