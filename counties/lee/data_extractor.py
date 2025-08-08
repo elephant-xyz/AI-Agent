@@ -977,7 +977,9 @@ def extract_flood_storm_information_from_html(html_content):
     # Look for FEMA search URL - check for any links to FEMA in the flood section
     fema_link = elevation_section.find('a', href=lambda x: x and 'fema.gov' in x)
     if fema_link:
-        flood_info['fema_search_url'] = fema_link.get('href')
+        raw_url = fema_link.get('href')
+        # URL encode spaces as %20
+        flood_info['fema_search_url'] = quote(raw_url, safe=':/?#[]@!$&\'()*+,;=')
 
     # Determine if flood insurance is required based on evacuation zone
     # Zones A, AE, AH, AO, AR, A99, V, VE typically require flood insurance
