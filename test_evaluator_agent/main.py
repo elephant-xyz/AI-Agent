@@ -17,7 +17,13 @@ from typing import Dict, Any, List, TypedDict, Set, Optional
 import pandas as pd
 import threading
 import signal
-import psutil
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    logger = logging.getLogger(__name__)
+    logger.warning("psutil not installed - some features may be limited")
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain.chat_models import init_chat_model
@@ -230,6 +236,10 @@ class ProcessKiller:
     @staticmethod
     def kill_mcp_processes():
         """Kill MCP server processes that might be hanging"""
+        if not HAS_PSUTIL:
+            logger.warning("psutil not available - cannot kill MCP processes")
+            return []
+            
         killed_processes = []
 
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -311,9 +321,12 @@ def extract_and_validate_input_zip(zip_path: str) -> bool:
     Returns True if extraction and validation successful, False otherwise.
     """
     logger.info(f"📦 Extracting input zip: {zip_path}")
+    print_status(f"Extracting zip archive: {zip_path}")
     
     if not os.path.exists(zip_path):
-        logger.error(f"❌ Input zip file not found: {zip_path}")
+        error_msg = f"Input zip file not found: {zip_path}"
+        logger.error(f"❌ {error_msg}")
+        print_status(f"ERROR: {error_msg}")
         return False
     
     # Clean up existing directories if they exist
@@ -328,70 +341,130 @@ def extract_and_validate_input_zip(zip_path: str) -> bool:
     try:
         # Extract the zip file
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(BASE_DIR)
-            logger.info(f"✅ Extracted zip contents to {BASE_DIR}")
-            
-            # List extracted files
+            # Check zip structure
             extracted_files = zip_ref.namelist()
-            logger.info(f"📋 Extracted files: {extracted_files}")
+            logger.info(f"📋 Files in zip: {extracted_files}")
+            print_status(f"Found {len(extracted_files)} files/folders in zip")
+            
+            # Check if files are in a subfolder
+            has_root_csv = any(f in ['seed.csv', 'upload-results.csv'] for f in extracted_files)
+            
+            if not has_root_csv:
+                # Files might be in a subfolder
+                # Find the common prefix (folder name)
+                folders = set()
+                for f in extracted_files:
+                    if '/' in f:
+                        folders.add(f.split('/')[0])
+                
+                if len(folders) == 1:
+                    # All files are in a single subfolder
+                    subfolder = folders.pop()
+                    logger.info(f"📁 Files are in subfolder: {subfolder}")
+                    print_status(f"Files are in subfolder: {subfolder}, extracting...")
+                    
+                    # Extract to temp dir first
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        zip_ref.extractall(temp_dir)
+                        
+                        # Move files from subfolder to BASE_DIR
+                        subfolder_path = os.path.join(temp_dir, subfolder)
+                        for item in os.listdir(subfolder_path):
+                            src = os.path.join(subfolder_path, item)
+                            dst = os.path.join(BASE_DIR, item)
+                            if os.path.isdir(src):
+                                shutil.copytree(src, dst)
+                            else:
+                                shutil.copy2(src, dst)
+                        logger.info(f"✅ Moved files from subfolder to {BASE_DIR}")
+                else:
+                    # Direct extraction
+                    zip_ref.extractall(BASE_DIR)
+                    logger.info(f"✅ Extracted zip contents to {BASE_DIR}")
+            else:
+                # Direct extraction
+                zip_ref.extractall(BASE_DIR)
+                logger.info(f"✅ Extracted zip contents to {BASE_DIR}")
+                
     except Exception as e:
-        logger.error(f"❌ Failed to extract zip: {e}")
+        error_msg = f"Failed to extract zip: {e}"
+        logger.error(f"❌ {error_msg}")
+        print_status(f"ERROR: {error_msg}")
         return False
     
     # Validate seed.csv
     seed_path = os.path.join(BASE_DIR, 'seed.csv')
     if not os.path.exists(seed_path):
-        logger.error("❌ seed.csv not found in extracted archive")
+        error_msg = "seed.csv not found in extracted archive"
+        logger.error(f"❌ {error_msg}")
+        print_status(f"ERROR: {error_msg}")
         return False
     
     try:
         seed_df = pd.read_csv(seed_path, dtype={'parcel_id': str, 'source_identifier': str})
         if len(seed_df) != 1:
-            logger.error(f"❌ seed.csv must contain exactly 1 record, found {len(seed_df)}")
+            error_msg = f"seed.csv must contain exactly 1 record, found {len(seed_df)}"
+            logger.error(f"❌ {error_msg}")
+            print_status(f"ERROR: {error_msg}")
             return False
         logger.info("✅ seed.csv validated: 1 record found")
         parcel_id = seed_df['parcel_id'].iloc[0]
         logger.info(f"📍 Processing property with parcel_id: {parcel_id}")
     except Exception as e:
-        logger.error(f"❌ Failed to read seed.csv: {e}")
+        error_msg = f"Failed to read seed.csv: {e}"
+        logger.error(f"❌ {error_msg}")
+        print_status(f"ERROR: {error_msg}")
         return False
     
     # Validate input folder
     input_dir = os.path.join(BASE_DIR, 'input')
     if not os.path.exists(input_dir):
-        logger.error("❌ input/ folder not found in extracted archive")
+        error_msg = "input/ folder not found in extracted archive"
+        logger.error(f"❌ {error_msg}")
+        print_status(f"ERROR: {error_msg}")
         return False
     
     input_files = [f for f in os.listdir(input_dir) if f.endswith(('.html', '.json'))]
     if len(input_files) != 1:
-        logger.error(f"❌ input/ folder must contain exactly 1 file (.html or .json), found {len(input_files)}")
+        error_msg = f"input/ folder must contain exactly 1 file (.html or .json), found {len(input_files)}"
+        logger.error(f"❌ {error_msg}")
+        print_status(f"ERROR: {error_msg}")
         return False
     logger.info(f"✅ input/ folder validated: 1 file found ({input_files[0]})")
     
     # Validate upload-results.csv
     upload_path = os.path.join(BASE_DIR, 'upload-results.csv')
     if not os.path.exists(upload_path):
-        logger.error("❌ upload-results.csv not found in extracted archive")
+        error_msg = "upload-results.csv not found in extracted archive"
+        logger.error(f"❌ {error_msg}")
+        print_status(f"ERROR: {error_msg}")
         return False
     
     try:
         upload_df = pd.read_csv(upload_path)
         if 'propertyHash' not in upload_df.columns:
-            logger.error("❌ upload-results.csv must contain 'propertyHash' column")
+            error_msg = "upload-results.csv must contain 'propertyHash' column"
+            logger.error(f"❌ {error_msg}")
+            print_status(f"ERROR: {error_msg}")
             return False
         
         # Check that all records have the same propertyHash
         unique_hashes = upload_df['propertyHash'].unique()
         if len(unique_hashes) != 1:
-            logger.error(f"❌ upload-results.csv must contain records for only 1 propertyHash, found {len(unique_hashes)}")
+            error_msg = f"upload-results.csv must contain records for only 1 propertyHash, found {len(unique_hashes)}"
+            logger.error(f"❌ {error_msg}")
+            print_status(f"ERROR: {error_msg}")
             return False
         
         logger.info(f"✅ upload-results.csv validated: {len(upload_df)} records for propertyHash: {unique_hashes[0]}")
     except Exception as e:
-        logger.error(f"❌ Failed to read upload-results.csv: {e}")
+        error_msg = f"Failed to read upload-results.csv: {e}"
+        logger.error(f"❌ {error_msg}")
+        print_status(f"ERROR: {error_msg}")
         return False
     
     logger.info("✅ Input zip validation successful")
+    print_status("Input zip validation successful")
     return True
 
 
@@ -3361,6 +3434,9 @@ async def main(args=None):
         new_args.input_zip = getattr(args, 'input_zip', None)
         args = new_args
 
+    # Show log file location
+    print_status(f"Logging to: {log_file_path}")
+    
     try:
         # Handle input zip extraction if provided
         if hasattr(args, 'input_zip') and args.input_zip:
@@ -3369,6 +3445,8 @@ async def main(args=None):
             
             if not extract_and_validate_input_zip(args.input_zip):
                 logger.error("Failed to extract and validate input zip")
+                print_status(f"ERROR: Failed to process input zip")
+                print_status(f"Check log file for details: {log_file_path}")
                 sys.exit(1)
         
         # Run the appropriate workflow
@@ -3392,7 +3470,9 @@ async def main(args=None):
             sys.exit(1)
                 
     except Exception as e:
-        logger.error(f"Processing failed: {e}")
+        logger.error(f"Processing failed: {e}", exc_info=True)
+        print_status(f"ERROR: Processing failed: {e}")
+        print_status(f"Check log file for full stack trace: {log_file_path}")
         sys.exit(1)
 
 
