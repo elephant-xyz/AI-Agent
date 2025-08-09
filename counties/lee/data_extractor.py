@@ -913,13 +913,15 @@ def ensure_dir(path):
 def parse_float(val):
     """Parse string to float, handling currency symbols and commas"""
     if not val:
-        return 0.0
+        return "0.00"
     try:
         # Remove currency symbols, commas, and whitespace
         clean_val = re.sub(r'[$,\s]', '', str(val))
-        return float(clean_val) if clean_val else 0.0
+        float_val = float(clean_val) if clean_val else 0.0
     except (ValueError, TypeError):
-        return 0.0
+        float_val = 0.0
+
+    return f"{float_val:.2f}"
 
 
 def parse_int(val):
