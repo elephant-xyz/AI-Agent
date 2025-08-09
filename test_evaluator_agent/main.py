@@ -435,20 +435,20 @@ def create_output_zip(output_name: str = "transformed_output.zip") -> bool:
     import zipfile
 
     output_zip_path = os.path.join(BASE_DIR, output_name)
-    data_dir = os.path.join(BASE_DIR, "data")
+    submit_dir = os.path.join(BASE_DIR, "submit")  # CHANGED: from "data" to "submit"
 
-    if not os.path.exists(data_dir):
-        print("ERROR: No data directory found to zip")
+    if not os.path.exists(submit_dir):  # CHANGED: check submit_dir instead of data_dir
+        print("ERROR: No submit directory found to zip")
         return False
 
     try:
         with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
-            # Walk through data directory and add all files
-            for root, dirs, files in os.walk(data_dir):
+            # Walk through submit directory and add all files  # CHANGED: submit instead of data
+            for root, dirs, files in os.walk(submit_dir):
                 for file in files:
                     file_path = os.path.join(root, file)
-                    # Create archive path relative to data directory
-                    archive_path = os.path.relpath(file_path, data_dir)
+                    # Create archive path relative to submit directory  # CHANGED: submit instead of data
+                    archive_path = os.path.relpath(file_path, submit_dir)
                     zip_ref.write(file_path, archive_path)
                     logger.info(f"Added to ZIP: {archive_path}")
 
@@ -470,19 +470,7 @@ async def run_simple_workflow(args=None):
     """Simple workflow: process single file with unnormalized_address.json as seed"""
 
     logger.info("=== Starting Simple Workflow Mode ===")
-    print_status("Running in Simple Mode - No AI Agents")
-
-    # Step 1: Fetch County CID
-    logger.info("Fetching County data group CID from schema manifest...")
-    try:
-        county_data_group_cid = fetch_county_data_group_cid()
-        logger.info(f"✅ Successfully retrieved County CID: {county_data_group_cid}")
-        print_status(f"County CID retrieved: {county_data_group_cid}")
-    except (ConnectionError, ValueError, RuntimeError) as e:
-        error_msg = f"Failed to fetch County data group CID: {str(e)}"
-        logger.error(error_msg)
-        print_status(f"CRITICAL ERROR: {error_msg}")
-        raise SystemExit(f"Workflow failed: {error_msg}")
+    print_status("Running in Transform Mode")
 
     # Step 2: Download scripts from GitHub
     logger.info("Downloading scripts from GitHub repository...")
@@ -581,8 +569,8 @@ async def run_simple_workflow(args=None):
         logger.error(f"❌ Failed: {failed_scripts}")
 
     # Step 7: Check if we should create output ZIP
-    data_dir = os.path.join(BASE_DIR, "data")
-    has_data = os.path.exists(data_dir) and len(os.listdir(data_dir)) > 0
+    submit_dir = os.path.join(BASE_DIR, "submit")
+    has_data = os.path.exists(submit_dir) and len(os.listdir(submit_dir)) > 0
 
     if critical_script_failed or not has_data:
         logger.error("❌ Critical failure detected or no data generated")
@@ -594,7 +582,7 @@ async def run_simple_workflow(args=None):
     # Step 8: Run CLI validation
     logger.info("Running CLI validation...")
     print_status("Running CLI validation...")
-    cli_success, cli_errors, _ = run_cli_validator("data", county_data_group_cid)
+    cli_success, cli_errors, _ = run_cli_validator("data", "county_data_group")
 
     if not cli_success:
         logger.error("❌ CLI validation failed")
@@ -2308,40 +2296,6 @@ def fetch_schema_from_ipfs(cid):
         f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
     on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
 )
-def fetch_county_data_group_cid():
-    """Fetch the county data group CID from the schema manifest API"""
-    manifest_url = "https://lexicon.elephant.xyz/json-schemas/schema-manifest.json"
-
-    try:
-        logger.info(f"🔍 Fetching schema manifest from: {manifest_url}")
-        response = requests.get(manifest_url, timeout=30)
-        response.raise_for_status()
-
-        manifest_data = response.json()
-        logger.info("✅ Successfully fetched schema manifest")
-
-        # Extract County data group CID
-        if "County" in manifest_data:
-            county_cid = manifest_data["County"]["ipfsCid"]
-            logger.info(f"📋 Found County data group CID: {county_cid}")
-            return county_cid
-        else:
-            error_msg = "❌ County entry not found in schema manifest"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-    except requests.exceptions.RequestException as e:
-        error_msg = f"❌ Error fetching schema manifest: {e}"
-        logger.error(error_msg)
-        raise ConnectionError(error_msg)
-    except json.JSONDecodeError as e:
-        error_msg = f"❌ Error parsing schema manifest JSON: {e}"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    except Exception as e:
-        error_msg = f"❌ Unexpected error fetching schema manifest: {e}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
 
 
 def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
@@ -2349,13 +2303,6 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
     Run the CLI validation command and return results
     Returns: (success: bool, error_details: str, error_hash: str)
     """
-    if not county_data_group_cid:
-        error_msg = "County data group CID not provided to CLI validator"
-        logger.error(error_msg)
-        error_hash = hashlib.md5(error_msg.encode()).hexdigest()
-        return False, error_msg, error_hash
-
-    logger.info(f"🏛️ Using County CID: {county_data_group_cid}")
 
     try:
         logger.info("📁 Creating submit directory and copying data...")
@@ -3108,22 +3055,6 @@ def download_scripts_from_github():
 async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
 
-    logger.info("Fetching County data group CID from schema manifest...")
-    try:
-        county_data_group_cid = fetch_county_data_group_cid()
-        logger.info(f"✅ Successfully retrieved County CID: {county_data_group_cid}")
-        print_status(f"County CID retrieved: {county_data_group_cid}")
-    except (ConnectionError, ValueError, RuntimeError) as e:
-        error_msg = f"Failed to fetch County data group CID: {str(e)}"
-        logger.error(error_msg)
-        print_status(f"CRITICAL ERROR: {error_msg}")
-        raise SystemExit(f"Workflow failed: {error_msg}")
-
-    if not county_data_group_cid:
-        error_msg = "County data group CID is empty - exiting"
-        logger.error(error_msg)
-        print_status(f"CRITICAL ERROR: {error_msg}")
-        raise SystemExit(f"Workflow failed: {error_msg}")
 
     # Load schemas from IPFS
     logger.info("Downloading scripts from GitHub repository...")
@@ -3226,7 +3157,7 @@ async def run_three_node_workflow():
         max_generation_restarts=2,
         agent_timeout_seconds=300,  # 5 minutes timeout per agent operation
         last_agent_activity=0,
-        county_data_group_cid=county_data_group_cid,
+        county_data_group_cid="county_data_group",
     )
 
     # Create the workflow graph
