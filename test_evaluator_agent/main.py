@@ -1,22 +1,10 @@
 import asyncio
-import os
-import sys
-import json
-import zipfile
-import logging
-import requests
-import backoff
 import argparse
-import time
-import git
-import tempfile
 import hashlib
-import shutil
+import sys
 import subprocess
 from typing import Dict, Any, List, TypedDict, Set, Optional
 import pandas as pd
-import threading
-import signal
 import psutil
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
@@ -27,6 +15,8 @@ from langchain_mcp_adapters.client import (
 )
 from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
+from .utils import *
+from urllib.parse import urlparse, parse_qs
 
 # Try to load .env from multiple locations
 for env_path in [".env", os.path.expanduser("~/.env")]:
@@ -427,50 +417,37 @@ def parse_arguments():
         type=str,
         help='Output ZIP filename (e.g., my_output.zip). If not specified, auto-generates based on input.'
     )
+    parser.add_argument(
+        '--group',
+        type=str,
+        choices=['county', 'seed'],
+        help='Processing group type: county or seed'
+    )
+    parser.add_argument(
+        '--input-csv',
+        type=str,
+        help='Path to CSV file for seed processing (required when --group seed)'
+    )
     return parser.parse_args()
-
-
-def create_output_zip(output_name: str = "transformed_output.zip") -> bool:
-    """Create output ZIP file from processed data"""
-    import zipfile
-
-    output_zip_path = os.path.join(BASE_DIR, output_name)
-    submit_dir = os.path.join(BASE_DIR, "submit")  # CHANGED: from "data" to "submit"
-
-    if not os.path.exists(submit_dir):  # CHANGED: check submit_dir instead of data_dir
-        print("ERROR: No submit directory found to zip")
-        return False
-
-    try:
-        with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
-            # Walk through submit directory and add all files  # CHANGED: submit instead of data
-            for root, dirs, files in os.walk(submit_dir):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    # Create archive path relative to submit directory  # CHANGED: submit instead of data
-                    archive_path = os.path.relpath(file_path, submit_dir)
-                    zip_ref.write(file_path, archive_path)
-                    logger.info(f"Added to ZIP: {archive_path}")
-
-        # Count files in the created ZIP
-        with zipfile.ZipFile(output_zip_path, 'r') as zip_ref:
-            file_count = len(zip_ref.namelist())
-
-        print_status(f"Created output ZIP: {output_name} with {file_count} files")
-        logger.info(f"✅ Created output ZIP: {output_zip_path}")
-        return True
-
-    except Exception as e:
-        print(f"ERROR: Failed to create output ZIP: {e}")
-        logger.error(f"Failed to create output ZIP: {e}")
-        return False
 
 
 async def run_simple_workflow(args=None):
     """Simple workflow: process single file with unnormalized_address.json as seed"""
 
     logger.info("=== Starting Simple Workflow Mode ===")
-    print_status("Running in Transform Mode")
+    print_status("Running in Simple Mode - No AI Agents")
+
+    # Step 1: Fetch County CID
+    logger.info("Fetching County data group CID from schema manifest...")
+    try:
+        county_data_group_cid = fetch_county_data_group_cid()
+        logger.info(f"✅ Successfully retrieved County CID: {county_data_group_cid}")
+        print_status(f"County CID retrieved: {county_data_group_cid}")
+    except (ConnectionError, ValueError, RuntimeError) as e:
+        error_msg = f"Failed to fetch County data group CID: {str(e)}"
+        logger.error(error_msg)
+        print_status(f"CRITICAL ERROR: {error_msg}")
+        raise SystemExit(f"Workflow failed: {error_msg}")
 
     # Step 2: Download scripts from GitHub
     logger.info("Downloading scripts from GitHub repository...")
@@ -569,8 +546,8 @@ async def run_simple_workflow(args=None):
         logger.error(f"❌ Failed: {failed_scripts}")
 
     # Step 7: Check if we should create output ZIP
-    submit_dir = os.path.join(BASE_DIR, "submit")
-    has_data = os.path.exists(submit_dir) and len(os.listdir(submit_dir)) > 0
+    data_dir = os.path.join(BASE_DIR, "data")
+    has_data = os.path.exists(data_dir) and len(os.listdir(data_dir)) > 0
 
     if critical_script_failed or not has_data:
         logger.error("❌ Critical failure detected or no data generated")
@@ -582,7 +559,7 @@ async def run_simple_workflow(args=None):
     # Step 8: Run CLI validation
     logger.info("Running CLI validation...")
     print_status("Running CLI validation...")
-    cli_success, cli_errors, _ = run_cli_validator("data", "county_data_group")
+    cli_success, cli_errors, _ = run_cli_validator("data", county_data_group_cid)
 
     if not cli_success:
         logger.error("❌ CLI validation failed")
@@ -619,7 +596,7 @@ async def run_simple_workflow(args=None):
                     file_count = len(zip_ref.namelist())
                     if file_count > 0:
                         logger.info("✅ Output ZIP created successfully with validated data")
-                        print_status(f"✅ Workflow completed successfully - Output ZIP {output_name} created with validated data")
+                        print_status("✅ Workflow completed successfully - Output ZIP created with validated data")
                         return True
                     else:
                         logger.error("❌ Output ZIP created but is empty")
@@ -657,18 +634,6 @@ def should_restart_due_to_timeout(state: WorkflowState) -> bool:
     """Check if we should restart due to agent timeout"""
     return (is_agent_frozen(state) and
             state['generation_restart_count'] < state['max_generation_restarts'])
-
-
-def print_status(message):
-    """Print status messages to terminal only"""
-    print(f"STATUS: {message}")
-    logger.info(f"STATUS: {message}")  # Also log to file
-
-
-def print_running(node_name):
-    """Print running status"""
-    print(f"🔄 RUNNING: {node_name}")
-    logger.info(f"RUNNING: {node_name}")
 
 
 def parse_multi_value_query_string(query_string_value):
@@ -720,13 +685,6 @@ def parse_multi_value_query_string(query_string_value):
 
     logger.warning(f"Could not parse multiValueQueryString: {query_string_str[:100]}...")
     return None
-
-
-def print_completed(node_name, success=True):
-    """Print completion status"""
-    status = "✅ COMPLETED" if success else "❌ FAILED"
-    print(f"{status}: {node_name}")
-    logger.info(f"COMPLETED: {node_name} - Success: {success}")
 
 
 class OwnerAnalysisAgent:
@@ -2234,33 +2192,6 @@ class ExtractionGeneratorEvaluatorPair:
             return f"{agent_name} error on turn {turn}: {str(e)}"
 
 
-def cleanup_owners_directory():
-    """Clean up the owners and data directories at the start of workflow"""
-    directories_to_cleanup = [
-        ("owners", os.path.join(BASE_DIR, "owners")),
-        ("data", os.path.join(BASE_DIR, "data"))
-    ]
-
-    for dir_name, dir_path in directories_to_cleanup:
-        if os.path.exists(dir_path):
-            try:
-                shutil.rmtree(dir_path)
-                logger.info(f"🗑️ Cleaned up existing {dir_name} directory: {dir_path}")
-                print_status(f"Cleaned up existing {dir_name} directory")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not clean up {dir_name} directory: {e}")
-                print_status(f"Warning: Could not clean up {dir_name} directory: {e}")
-        else:
-            logger.info(f"📁 {dir_name.capitalize()} directory does not exist, no cleanup needed")
-
-        # Create fresh directory
-        try:
-            os.makedirs(dir_path, exist_ok=True)
-            logger.info(f"📁 Created fresh {dir_name} directory: {dir_path}")
-        except Exception as e:
-            logger.error(f"❌ Could not create {dir_name} directory: {e}")
-            raise
-
 
 def fetch_schema_from_ipfs(cid):
     """Fetch schema from IPFS using the provided CID."""
@@ -2296,6 +2227,40 @@ def fetch_schema_from_ipfs(cid):
         f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
     on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
 )
+def fetch_county_data_group_cid():
+    """Fetch the county data group CID from the schema manifest API"""
+    manifest_url = "https://lexicon.elephant.xyz/json-schemas/schema-manifest.json"
+
+    try:
+        logger.info(f"🔍 Fetching schema manifest from: {manifest_url}")
+        response = requests.get(manifest_url, timeout=30)
+        response.raise_for_status()
+
+        manifest_data = response.json()
+        logger.info("✅ Successfully fetched schema manifest")
+
+        # Extract County data group CID
+        if "County" in manifest_data:
+            county_cid = manifest_data["County"]["ipfsCid"]
+            logger.info(f"📋 Found County data group CID: {county_cid}")
+            return county_cid
+        else:
+            error_msg = "❌ County entry not found in schema manifest"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+    except requests.exceptions.RequestException as e:
+        error_msg = f"❌ Error fetching schema manifest: {e}"
+        logger.error(error_msg)
+        raise ConnectionError(error_msg)
+    except json.JSONDecodeError as e:
+        error_msg = f"❌ Error parsing schema manifest JSON: {e}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    except Exception as e:
+        error_msg = f"❌ Unexpected error fetching schema manifest: {e}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
 
 def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
@@ -2303,6 +2268,13 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
     Run the CLI validation command and return results
     Returns: (success: bool, error_details: str, error_hash: str)
     """
+    if not county_data_group_cid:
+        error_msg = "County data group CID not provided to CLI validator"
+        logger.error(error_msg)
+        error_hash = hashlib.md5(error_msg.encode()).hexdigest()
+        return False, error_msg, error_hash
+
+    logger.info(f"🏛️ Using County CID: {county_data_group_cid}")
 
     try:
         logger.info("📁 Creating submit directory and copying data...")
@@ -2948,113 +2920,25 @@ def should_retry_structure_extraction(state: WorkflowState) -> str:
         return "extraction"
 
 
-@backoff.on_exception(
-    backoff.expo,
-    (git.GitCommandError, ConnectionError, TimeoutError),
-    max_tries=3,
-    max_time=300,  # 5 minutes total
-    on_backoff=lambda details: logger.warning(
-        f"🔄 Git clone failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
-    on_giveup=lambda details: logger.error(f"💥 Git clone failed after {details['tries']} attempts")
-)
-def download_scripts_from_github():
-    """Download scripts from GitHub using county_jurisdiction from unnormalized_address.json"""
-
-    # Read county name from unnormalized_address.json (which is saved as seed.csv)
-    seed_csv_path = os.path.join(BASE_DIR, "unnormalized_address.json")  # This is actually the unnormalized_address.json content
-
-    if os.path.exists(seed_csv_path):
-        try:
-            # Read as JSON since it's actually unnormalized_address.json content
-            with open(seed_csv_path, 'r', encoding='utf-8') as f:
-                address_data = json.load(f)
-
-            if 'county_jurisdiction' in address_data:
-                county_name = str(address_data['county_jurisdiction']).strip()
-                logger.info(f"📍 Found county_jurisdiction: {county_name}")
-            else:
-                logger.error("❌ 'county_jurisdiction' field not found in unnormalized_address.json")
-                return False
-
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Error parsing unnormalized_address.json as JSON: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"❌ Error reading unnormalized_address.json: {e}")
-            return False
-    else:
-        logger.error("❌ unnormalized_address.json not found (saved as seed.csv)")
-        return False
-
-    if not county_name:
-        logger.error("❌ Could not determine county name from county_jurisdiction")
-        return False
-
-    # Try multiple variations of the county name
-    county_variations = [
-        county_name.lower(),  # lowercase
-        county_name,  # original case
-        county_name.title(),  # Title Case
-        county_name.upper()  # UPPERCASE
-    ]
-
-    try:
-        for variation in county_variations:
-            # GitHub API URL for the counties directory
-            api_url = f"https://api.github.com/repos/elephant-xyz/AI-Agent/contents/counties/{variation}"
-
-            logger.info(f"🔄 Trying county variation: '{variation}' - {api_url}")
-
-            response = requests.get(api_url, timeout=30)
-
-            if response.status_code == 404:
-                logger.warning(f"⚠️ County directory '{variation}' not found, trying next variation...")
-                continue
-            elif response.status_code != 200:
-                logger.warning(
-                    f"⚠️ GitHub API request failed for '{variation}': {response.status_code}, trying next variation...")
-                continue
-
-            # If we get here, we found a valid directory
-            logger.info(f"✅ Found county directory: '{variation}'")
-
-            files_data = response.json()
-            local_scripts_dir = os.path.join(BASE_DIR, "scripts")
-            os.makedirs(local_scripts_dir, exist_ok=True)
-
-            copied_files = []
-
-            for file_info in files_data:
-                if file_info['name'].endswith('.py') and file_info['type'] == 'file':
-                    # Download the file content
-                    file_response = requests.get(file_info['download_url'], timeout=30)
-                    if file_response.status_code == 200:
-                        file_path = os.path.join(local_scripts_dir, file_info['name'])
-                        with open(file_path, 'w', encoding='utf-8') as f:
-                            f.write(file_response.text)
-                        copied_files.append(file_info['name'])
-                        logger.info(f"📄 Downloaded: {file_info['name']}")
-
-            if copied_files:
-                logger.info(f"✅ Downloaded {len(copied_files)} scripts from {variation}/ directory")
-                return True
-            else:
-                logger.warning(f"⚠️ No Python scripts found in {variation}/ directory")
-                # Continue to try other variations even if this one has no scripts
-
-        # If we've tried all variations and none worked
-        logger.error(f"❌ Could not find county directory for any variation of '{county_name}'")
-        logger.error(f"❌ Tried: {', '.join(county_variations)}")
-        return False
-
-    except Exception as e:
-        logger.error(f"❌ Error using GitHub API: {e}")
-        return False
-
-
 async def run_three_node_workflow():
     """Main function to run the two-node workflow with retry logic"""
 
+    logger.info("Fetching County data group CID from schema manifest...")
+    try:
+        county_data_group_cid = fetch_county_data_group_cid()
+        logger.info(f"✅ Successfully retrieved County CID: {county_data_group_cid}")
+        print_status(f"County CID retrieved: {county_data_group_cid}")
+    except (ConnectionError, ValueError, RuntimeError) as e:
+        error_msg = f"Failed to fetch County data group CID: {str(e)}"
+        logger.error(error_msg)
+        print_status(f"CRITICAL ERROR: {error_msg}")
+        raise SystemExit(f"Workflow failed: {error_msg}")
+
+    if not county_data_group_cid:
+        error_msg = "County data group CID is empty - exiting"
+        logger.error(error_msg)
+        print_status(f"CRITICAL ERROR: {error_msg}")
+        raise SystemExit(f"Workflow failed: {error_msg}")
 
     # Load schemas from IPFS
     logger.info("Downloading scripts from GitHub repository...")
@@ -3157,7 +3041,7 @@ async def run_three_node_workflow():
         max_generation_restarts=2,
         agent_timeout_seconds=300,  # 5 minutes timeout per agent operation
         last_agent_activity=0,
-        county_data_group_cid="county_data_group",
+        county_data_group_cid=county_data_group_cid,
     )
 
     # Create the workflow graph
@@ -3223,6 +3107,75 @@ async def run_three_node_workflow():
         raise
 
 
+async def run_seed_workflow(args=None):
+    """Seed workflow: process CSV file to create seed folders and ZIP them"""
+
+    logger.info("=== Starting Seed Workflow Mode ===")
+    print_status("Running in Seed Processing Mode")
+
+    # Validate CSV input
+    if not args or not args.input_csv:
+        logger.error("CSV file path is required for seed processing")
+        print_status("ERROR: --input-csv is required for seed processing")
+        return False
+
+    csv_file_path = args.input_csv
+    if not os.path.exists(csv_file_path):
+        logger.error(f"CSV file not found: {csv_file_path}")
+        print_status(f"ERROR: CSV file not found: {csv_file_path}")
+        return False
+
+    # Process CSV file to create seed folders
+    print_status("Processing CSV file and creating seed folders...")
+    logger.info(f"Processing CSV file: {csv_file_path}")
+
+    if not process_csv_to_seed_folders(csv_file_path):
+        logger.error("Failed to process CSV file")
+        print_status("ERROR: Failed to process CSV file")
+        return False
+
+    # Create output ZIP
+    print_status("Creating output ZIP file...")
+
+    # Determine output filename
+    if args and args.output_zip:
+        output_name = args.output_zip
+        if not output_name.lower().endswith('.zip'):
+            output_name += '.zip'
+    else:
+        # Auto-generate name based on input CSV
+        csv_basename = os.path.splitext(os.path.basename(csv_file_path))[0]
+        output_name = f"{csv_basename}_seed_output.zip"
+
+    if create_seed_output_zip(output_name):
+        # Verify the ZIP
+        output_zip_path = os.path.join(BASE_DIR, output_name)
+        if os.path.exists(output_zip_path):
+            try:
+                with zipfile.ZipFile(output_zip_path, 'r') as zip_ref:
+                    file_count = len(zip_ref.namelist())
+                    if file_count > 0:
+                        logger.info("✅ Seed output ZIP created successfully")
+                        print_status(f"✅ Seed workflow completed successfully - Output ZIP {output_name} created")
+                        return True
+                    else:
+                        logger.error("❌ Seed output ZIP created but is empty")
+                        print_status("❌ Seed workflow failed - Output ZIP is empty")
+                        return False
+            except zipfile.BadZipFile:
+                logger.error("❌ Seed output ZIP file is corrupted")
+                print_status("❌ Seed workflow failed - Output ZIP is corrupted")
+                return False
+        else:
+            logger.error("❌ Seed output ZIP file was not created")
+            print_status("❌ Seed workflow failed - Output ZIP not found")
+            return False
+    else:
+        logger.error("❌ Failed to create seed output ZIP")
+        print_status("❌ Seed workflow failed - Could not create output ZIP")
+        return False
+
+
 async def main(args=None):
     """Main entry point with argument parsing"""
     if args is None:
@@ -3230,21 +3183,42 @@ async def main(args=None):
 
     try:
         if args.transform:
-            # Handle ZIP file input - FIXED: Check for input_zip instead of zip_file
-            if args.input_zip:
-                if not validate_and_extract_simple_zip(args.input_zip):
+            # Check group type
+            if args.group == 'county':
+                # Original county processing
+                if args.input_zip:
+                    if not validate_and_extract_simple_zip(args.input_zip):
+                        sys.exit(1)
+                else:
+                    print("ERROR: ZIP file required for transform mode with county group")
+                    print("Usage: python3 agent_owner.py --transform --group county --input-zip your_data.zip")
+                    print(
+                        "ZIP should contain: unnormalized_address class, property_seed.json class and data needs to be transformed")
+                    sys.exit(1)
+
+                success = await run_simple_workflow(args)
+                if not success:
+                    sys.exit(1)
+
+            elif args.group == 'seed':
+                # New seed processing
+                if not args.input_csv:
+                    print("ERROR: CSV file required for transform mode with seed group")
+                    print("Usage: python3 agent_owner.py --transform --group seed --input-csv your_data.csv")
+                    print("CSV should contain: parcel_id,address,method,url,county,headers,body,json,source_identifier columns")
+                    sys.exit(1)
+
+                success = await run_seed_workflow(args)
+                if not success:
                     sys.exit(1)
             else:
-                print("ERROR: ZIP file required for transform mode")
-                print("Usage: python3 agent_owner.py --transform --input-zip your_data.zip")
-                print(
-                    "ZIP should contain: unnormalized_address class, property_seed.json class and data needs to be transformed")
-                sys.exit(1)
-
-            success = await run_simple_workflow(args)
-            if not success:
+                print("ERROR: --group flag is required with --transform")
+                print("Usage:")
+                print("  County mode: python3 agent_owner.py --transform --group county --input-zip your_data.zip")
+                print("  Seed mode:   python3 agent_owner.py --transform --group seed --input-csv your_data.csv")
                 sys.exit(1)
         else:
+            # Original workflow mode (no changes needed)
             await run_three_node_workflow()
     except Exception as e:
         logger.error(f"Processing failed: {e}")

@@ -13,7 +13,7 @@ An AI-powered data extraction evaluator agent using LangGraph for property data 
 
 ## Installation
 
-you can run the tool to use the county base script using `--transform` and provide the zip file using `--input-zip` :
+you can run the tool to use the county base script using `--transform --group county` and provide the zip file using `--input-zip` :
 
 ```bash
 uvx --from git+https://github.com/elephant-xyz/AI-Agent test-evaluator-agent --transform --input-zip path_to_your_zip_file.zip
@@ -22,6 +22,20 @@ to specify output zip file use `--output-zip` argument:
 ```bash
 uvx --from git+https://github.com/elephant-xyz/AI-Agent test-evaluator-agent --transform --input-zip path_to_your_zip_file.zip --output-zip path_to_your_output_zip_file.zip
 ````
+
+to run this tool to transform seed use `--transform  --group seed` argument:
+
+```bash
+uvx --from git+https://github.com/elephant-xyz/AI-Agent test-evaluator-agent --transform --group seed --input-csv seed.csv
+````
+
+## Commands:
+- `--output-zip`: Specify the output ZIP file for transformed data.
+- `--input-zip`: Specify the input ZIP file containing property data.
+- `--transform`: Enable data transformation mode.
+- `--group`: Specify the group type (e.g., `county`, `seed`) for processing.
+- `--input-csv`: Provide a CSV file for seed processing.
+
 
 ## Usage
 The agent requires specific directory structure and environment variables:

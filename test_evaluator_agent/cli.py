@@ -17,6 +17,8 @@ def main():
                         help="Path to ZIP file containing unnormalized_address class, property_seed.json class and data needs to be transformed")
     parser.add_argument("--output-zip", type=str,
                         help="Output ZIP filename (e.g., my_output.zip). If not specified, auto-generates based on input.")
+    parser.add_argument("--group", type=str, help="Group name needs to be transformed to (e.g., seed)")
+    parser.add_argument("--input-csv", type=str,help="Path to CSV file containing data to be transformed")
 
 
     args = parser.parse_args()
