@@ -40,20 +40,20 @@ def create_output_zip(output_name: str = "transformed_output.zip") -> bool:
     import zipfile
 
     output_zip_path = os.path.join(BASE_DIR, output_name)
-    data_dir = os.path.join(BASE_DIR, "data")
+    submit_dir = os.path.join(BASE_DIR, "submit")
 
-    if not os.path.exists(data_dir):
-        print("ERROR: No data directory found to zip")
+    if not os.path.exists(submit_dir):  # CHANGED: check submit_dir instead of data_dir
+        print("ERROR: No submit directory found to zip")
         return False
 
     try:
         with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
-            # Walk through data directory and add all files
-            for root, dirs, files in os.walk(data_dir):
+            # Walk through submit directory and add all files  # CHANGED: submit instead of data
+            for root, dirs, files in os.walk(submit_dir):
                 for file in files:
                     file_path = os.path.join(root, file)
-                    # Create archive path relative to data directory
-                    archive_path = os.path.relpath(file_path, data_dir)
+                    # Create archive path relative to submit directory  # CHANGED: submit instead of data
+                    archive_path = os.path.relpath(file_path, submit_dir)
                     zip_ref.write(file_path, archive_path)
                     logger.info(f"Added to ZIP: {archive_path}")
 

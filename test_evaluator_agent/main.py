@@ -546,7 +546,7 @@ async def run_simple_workflow(args=None):
         logger.error(f"❌ Failed: {failed_scripts}")
 
     # Step 7: Check if we should create output ZIP
-    data_dir = os.path.join(BASE_DIR, "data")
+    data_dir = os.path.join(BASE_DIR, "submit")
     has_data = os.path.exists(data_dir) and len(os.listdir(data_dir)) > 0
 
     if critical_script_failed or not has_data:
