@@ -922,10 +922,6 @@ def parse_float(val):
         return 0.0
 
 
-def parse_decimal(val):
-    return f"{parse_float(val):.2f}"
-
-
 def parse_int(val):
     """Parse string to int, extracting only digits"""
     if not val:
@@ -1025,7 +1021,7 @@ def extract_sales_and_taxes_from_html(html_content):
 
             # Map to schema fields
             price_field = sale.get('Sale Price') or sale.get('Price') or sale.get('Amount') or '0'
-            price_val = parse_decimal(price_field)
+            price_val = parse_float(price_field)
 
             date_field = (sale.get('Date') or
                           sale.get('Sale Date') or
@@ -1078,7 +1074,7 @@ def extract_sales_and_taxes_from_html(html_content):
                         tax.get('Market Value') or
                         tax.get('Just Value')
                     ),
-                    'property_building_amount': parse_decimal(tax.get('Building')),
+                    'property_building_amount': parse_float(tax.get('Building')),
                     'property_land_amount': parse_float(tax.get('Land')),
                     'property_taxable_value_amount': parse_float(tax.get('Taxable')),
                     'monthly_tax_amount': None,
