@@ -1,25 +1,27 @@
 # scripts/data_extractor.py
 """
 Extracts property, address, lot, tax, sales, person/company, and relationship data from input files.
-Follows schemas in ./schemas/ and uses owners/ and seed.csv for enrichment.
+Follows schemas in ./schemas/ and uses owners/ and property/address JSON files for enrichment.
 """
 import os
 import json
 import csv
 from collections import defaultdict
 
-SCHEMA_DIR = './schemas/'
 INPUT_DIR = './input/'
 OWNERS_DIR = './owners/'
 DATA_DIR = './data/'
-SEED_CSV = './seed.csv'
 
 
 # Utility functions
 
 def load_json(path):
-    with open(path, 'r') as f:
-        return json.load(f)
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"Warning: {path} not found")
+        return {}
 
 
 def write_json(path, data):
@@ -28,20 +30,30 @@ def write_json(path, data):
         json.dump(data, f, indent=2)
 
 
-def load_seed_csv(seed_csv):
-    seed_map = {}
-    with open(seed_csv, newline='') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            parcel_id = row['parcel_id']
-            seed_map[parcel_id] = row
-    return seed_map
+def load_property_seed_json():
+    """Load property seed JSON data"""
+    try:
+        with open('property_seed.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("Warning: property_seed.json not found")
+        return {}
+
+
+def load_unnormalized_address_json():
+    """Load unnormalized address JSON data"""
+    try:
+        with open('unnormalized_address.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("Warning: unnormalized_address.json not found")
+        return {}
 
 
 # Address parsing helpers
 
-def parse_address_components(site_address, seed_row=None):
-    # Returns dict with all address schema fields, using seed.csv first, then SiteAddress for missing fields
+def parse_address_components(site_address, property_seed=None, address_data=None):
+    # Returns dict with all address schema fields, using property/address data first, then SiteAddress for missing fields
     addr = {
         'street_number': None,
         'street_name': None,
@@ -64,19 +76,19 @@ def parse_address_components(site_address, seed_row=None):
         'section': None
     }
 
-    # FIRST: Parse from seed.csv if available
-    if seed_row and 'address' in seed_row:
-        seed_address = seed_row['address']
+    # FIRST: Parse from address_data if available
+    if address_data and address_data.get('full_address'):
+        full_address = address_data['full_address']
 
         # Extract unit identifier from # symbol
-        if '#' in seed_address:
-            parts = seed_address.split('#')
+        if '#' in full_address:
+            parts = full_address.split('#')
             if len(parts) > 1:
                 unit_part = parts[1].split(',')[0].strip()
                 addr['unit_identifier'] = f"#{unit_part}" if unit_part else None
 
-        # Parse full address from seed
-        addr_parts = [a.strip() for a in seed_address.split(',')]
+        # Parse full address from address data
+        addr_parts = [a.strip() for a in full_address.split(',')]
         if len(addr_parts) >= 1:
             # Parse street address (before first comma)
             street_addr = addr_parts[0]
@@ -194,11 +206,11 @@ def parse_address_components(site_address, seed_row=None):
                 if len(plus4) == 4 and plus4.isdigit():
                     addr['plus_four_postal_code'] = plus4
 
-        # County from seed
-        if 'county' in seed_row:
-            addr['county_name'] = seed_row['county'].upper()
+    # County from address_data
+    if address_data and address_data.get('county_jurisdiction'):
+        addr['county_name'] = address_data['county_jurisdiction'].upper()
 
-    # SECOND: Fill missing fields from SiteAddress if seed.csv didn't provide them
+    # SECOND: Fill missing fields from SiteAddress if address data didn't provide them
     if not addr['street_number']:
         snum = site_address.get('StreetNumber')
         addr['street_number'] = str(snum) if snum is not None and str(snum).strip() else None
@@ -266,8 +278,8 @@ def parse_address_components(site_address, seed_row=None):
     return addr
 
 
-# Main extraction logic will be appended next
-def extract_property(input_data, parcel_id):
+# Main extraction logic
+def extract_property(input_data, parcel_id, property_seed):
     propinfo = input_data.get('PropertyInfo', {})
     # property_structure_built_year: if not a single year, get earliest from BuildingInfos
     year_built = propinfo.get('YearBuilt')
@@ -293,12 +305,17 @@ def extract_property(input_data, parcel_id):
         property_type = 'MultipleFamily'
     else:
         property_type = None
+
+    # Get request identifier and source_http_request from property_seed
+    request_identifier = property_seed.get("parcel_id", parcel_id)
+    source_http_request = property_seed.get("source_http_request", {
+        "method": "GET",
+        "url": f"https://property-data.local/property/{parcel_id}"
+    })
+
     return {
-        'source_http_request': {
-            'method': 'GET',
-            'url': f'https://property-data.local/property/{parcel_id}'
-        },
-        'request_identifier': parcel_id,
+        'source_http_request': source_http_request,
+        'request_identifier': request_identifier,
         'livable_floor_area': str(propinfo.get('BuildingHeatedArea', '')) if propinfo.get(
             'BuildingHeatedArea') else None,
         'number_of_units_type': 'One',
@@ -327,8 +344,14 @@ def to_iso_date(date_str):
             return None
 
 
-def extract_sales(input_data, parcel_id):
+def extract_sales(input_data, parcel_id, property_seed):
     sales = []
+    request_identifier = property_seed.get("parcel_id", parcel_id)
+    source_http_request = property_seed.get("source_http_request", {
+        "method": "GET",
+        "url": f"https://property-data.local/property/{parcel_id}"
+    })
+
     for idx, sale in enumerate(input_data.get('SalesInfos', []), 1):
         # purchase_price_amount: must be positive number with at most 2 decimals
         price = sale.get('SalePrice', 0)
@@ -340,19 +363,22 @@ def extract_sales(input_data, parcel_id):
         except Exception:
             price = 0.01
         sales.append({
-            'source_http_request': {
-                'method': 'GET',
-                'url': f'https://property-data.local/property/{parcel_id}'
-            },
-            'request_identifier': parcel_id,
+            'source_http_request': source_http_request,
+            'request_identifier': request_identifier,
             'ownership_transfer_date': to_iso_date(sale.get('DateOfSale')),
             'purchase_price_amount': price,
         })
     return sales
 
 
-def extract_tax(input_data, parcel_id):
+def extract_tax(input_data, parcel_id, property_seed):
     taxes = []
+    request_identifier = property_seed.get("parcel_id", parcel_id)
+    source_http_request = property_seed.get("source_http_request", {
+        "method": "GET",
+        "url": f"https://property-data.local/property/{parcel_id}"
+    })
+
     for idx, tax in enumerate(input_data.get('Taxable', {}).get('TaxableInfos', []), 1):
         # property_assessed_value_amount, property_market_value_amount, property_taxable_value_amount: must be positive number with at most 2 decimals
         def safe_num(val):
@@ -365,11 +391,8 @@ def extract_tax(input_data, parcel_id):
                 return 0.01
 
         taxes.append({
-            'source_http_request': {
-                'method': 'GET',
-                'url': f'https://property-data.local/property/{parcel_id}'
-            },
-            'request_identifier': parcel_id,
+            'source_http_request': source_http_request,
+            'request_identifier': request_identifier,
             'tax_year': int(tax.get('Year')) if tax.get('Year') and str(tax.get('Year')).isdigit() else None,
             'property_assessed_value_amount': safe_num(tax.get('CityTaxableValue', 0)),
             'property_market_value_amount': safe_num(tax.get('CountyTaxableValue', 0)),
@@ -383,11 +406,17 @@ def extract_tax(input_data, parcel_id):
     return taxes
 
 
-def extract_owners_and_relationships(parcel_id, owners_schema, sales):
+def extract_owners_and_relationships(parcel_id, owners_schema, sales, property_seed):
     # Returns: list of person dicts, list of company dicts, list of relationship dicts
     persons = []
     companies = []
     relationships = []
+
+    request_identifier = property_seed.get("parcel_id", parcel_id)
+    source_http_request = property_seed.get("source_http_request", {
+        "method": "GET",
+        "url": f"https://property-data.local/property/{parcel_id}"
+    })
 
     property_key = f'property_{parcel_id}'
     if property_key not in owners_schema:
@@ -408,11 +437,8 @@ def extract_owners_and_relationships(parcel_id, owners_schema, sales):
             return ' '.join([p.capitalize() for p in parts])
 
         return {
-            'source_http_request': {
-                'method': 'GET',
-                'url': f'https://property-data.local/property/{parcel_id}'
-            },
-            'request_identifier': parcel_id,
+            'source_http_request': source_http_request,
+            'request_identifier': request_identifier,
             'birth_date': None,
             'first_name': fix_name(owner.get('first_name')) or 'Unknown',
             'last_name': fix_name(owner.get('last_name')) or 'Unknown',
@@ -425,11 +451,8 @@ def extract_owners_and_relationships(parcel_id, owners_schema, sales):
 
     def create_company(owner, parcel_id):
         return {
-            'source_http_request': {
-                'method': 'GET',
-                'url': f'https://property-data.local/property/{parcel_id}'
-            },
-            'request_identifier': parcel_id,
+            'source_http_request': source_http_request,
+            'request_identifier': request_identifier,
             'name': owner.get('name', 'Unknown Company').strip()
         }
 
@@ -527,14 +550,16 @@ def extract_owners_and_relationships(parcel_id, owners_schema, sales):
 
 
 def main():
-    # Load owners schema
+    # Load data files
+    print("Loading data files...")
+    property_seed = load_property_seed_json()
+    address_data = load_unnormalized_address_json()
     owners_schema = load_json(os.path.join(OWNERS_DIR, 'owners_schema.json'))
-    # Load seed.csv for address enrichment
-    seed_map = load_seed_csv(SEED_CSV)
-    # Load layout and lot data
     layout_data = load_json(os.path.join(OWNERS_DIR, 'layout_data.json'))
+
     # Lot data: synthesize from input if not present
     lot_data = {}
+
     # Process each input file
     for fname in os.listdir(INPUT_DIR):
         if not fname.endswith('.json'):
@@ -544,23 +569,36 @@ def main():
         input_data = load_json(input_path)
         out_dir = os.path.join(DATA_DIR, parcel_id)
         os.makedirs(out_dir, exist_ok=True)
+
         # Property
-        prop = extract_property(input_data, parcel_id)
+        prop = extract_property(input_data, parcel_id, property_seed)
         write_json(os.path.join(out_dir, 'property.json'), prop)
+
         # Address
         site_addr = input_data.get('SiteAddress', [{}])[0]
-        print(site_addr)
-        seed_row = seed_map.get(parcel_id)
-        print(seed_row)
-        addr = parse_address_components(site_addr, seed_row)
-        addr['source_http_request'] = {'method': 'GET', 'url': f'https://property-data.local/property/{parcel_id}'}
-        addr['request_identifier'] = parcel_id
+        print(f"SiteAddress for {parcel_id}:", site_addr)
+        print(f"Property seed for {parcel_id}:", property_seed)
+        print(f"Address data for {parcel_id}:", address_data)
+
+        addr = parse_address_components(site_addr, property_seed, address_data)
+
+        # Add source info to address
+        request_identifier = property_seed.get("parcel_id", parcel_id)
+        source_http_request = property_seed.get("source_http_request", {
+            "method": "GET",
+            "url": f"https://property-data.local/property/{parcel_id}"
+        })
+
+        addr['source_http_request'] = source_http_request
+        addr['request_identifier'] = request_identifier
         write_json(os.path.join(out_dir, 'address.json'), addr)
+
         # Layouts
         layout_key = f'property_{parcel_id}'
         if layout_key in layout_data:
             for idx, layout in enumerate(layout_data[layout_key]['layouts'], 1):
                 write_json(os.path.join(out_dir, f'layout_{idx}.json'), layout)
+
         # Lot
         # Synthesize lot.json from input if not present in lot_data
         lot_out_path = os.path.join(out_dir, 'lot.json')
@@ -571,9 +609,16 @@ def main():
             # Synthesize from input_data (very basic, just to pass schema)
             landlines = input_data.get('Land', {}).get('Landlines', [])
             land = landlines[0] if landlines else {}
+
+            request_identifier = property_seed.get("parcel_id", parcel_id)
+            source_http_request = property_seed.get("source_http_request", {
+                "method": "GET",
+                "url": f"https://property-data.local/property/{parcel_id}"
+            })
+
             lot_obj = {
-                'source_http_request': {'method': 'GET', 'url': f'https://property-data.local/property/{parcel_id}'},
-                'request_identifier': parcel_id,
+                'source_http_request': source_http_request,
+                'request_identifier': request_identifier,
                 'lot_type': None,
                 'lot_length_feet': land.get('Depth') if land.get('Depth') else None,
                 'lot_width_feet': land.get('FrontFeet') if land.get('FrontFeet') else None,
@@ -590,16 +635,20 @@ def main():
         # Always write lot.json, even if minimal (to pass schema)
         if lot_obj:
             write_json(lot_out_path, lot_obj)
+
         # Sales
-        sales = extract_sales(input_data, parcel_id)
+        sales = extract_sales(input_data, parcel_id, property_seed)
         for idx, sale in enumerate(sales, 1):
             write_json(os.path.join(out_dir, f'sales_{idx}.json'), sale)
+
         # Tax
-        taxes = extract_tax(input_data, parcel_id)
+        taxes = extract_tax(input_data, parcel_id, property_seed)
         for idx, tax in enumerate(taxes, 1):
             write_json(os.path.join(out_dir, f'tax_{idx}.json'), tax)
+
         # Owners and relationships
-        persons, companies, relationships = extract_owners_and_relationships(parcel_id, owners_schema, sales)
+        persons, companies, relationships = extract_owners_and_relationships(parcel_id, owners_schema, sales,
+                                                                             property_seed)
         for idx, person in enumerate(persons, 1):
             write_json(os.path.join(out_dir, f'person_{idx}.json'), person)
         for idx, company in enumerate(companies, 1):
@@ -625,6 +674,8 @@ def main():
                 filename = f'relationship_{idx}.json'
 
             write_json(os.path.join(out_dir, filename), rel)
+
+    print(f"Processing complete! Output saved to '{DATA_DIR}'")
 
 
 if __name__ == '__main__':

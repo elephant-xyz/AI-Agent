@@ -13,6 +13,11 @@ def main():
     parser = argparse.ArgumentParser(description="Test Evaluator Agent")
     parser.add_argument("--setup", action="store_true", help="Setup UV venv and mcp_code_executor dependencies")
     parser.add_argument("--transform", action="store_true", help="Run in simple mode: download scripts → run scripts → CLI validation (no AI agents)")
+    parser.add_argument("--input-zip", type=str,
+                        help="Path to ZIP file containing unnormalized_address class, property_seed.json class and data needs to be transformed")
+    parser.add_argument("--output-zip", type=str,
+                        help="Output ZIP filename (e.g., my_output.zip). If not specified, auto-generates based on input.")
+
 
     args = parser.parse_args()
 

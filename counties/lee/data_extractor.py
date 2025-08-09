@@ -3,6 +3,8 @@ import re
 import json
 import csv
 from bs4 import BeautifulSoup
+from urllib.parse import quote
+
 
 
 # Helper functions for address parsing
@@ -880,18 +882,23 @@ def format_name(name):
     else:
         return None
 
-def load_seed_csv(seed_path):
-    """Load seed CSV data into a dictionary"""
-    seed_map = {}
+def load_property_seed_json():
+    """Load property seed JSON data"""
     try:
-        with open(seed_path, newline='', encoding='utf-8') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                parcel_id = row['parcel_id']
-                seed_map[parcel_id] = row
+        with open('property_seed.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
     except FileNotFoundError:
-        print(f"Warning: {seed_path} not found")
-    return seed_map
+        print("Warning: property_seed.json not found")
+        return {}
+
+def load_unnormalized_address_json():
+    """Load unnormalized address JSON data"""
+    try:
+        with open('unnormalized_address.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("Warning: unnormalized_address.json not found")
+        return {}
 
 
 def load_json(path):
@@ -1105,7 +1112,8 @@ def main():
 
     # Load data files
     print("Loading data files...")
-    seed_map = load_seed_csv('seed.csv')
+    property_seed = load_property_seed_json()
+    address_data = load_unnormalized_address_json()
     owners_schema = load_json('./owners/owners_schema.json')
     layout_data = load_json('./owners/layout_data.json')
     structure_data = load_json('./owners/structure_data.json')
@@ -1143,15 +1151,12 @@ def main():
             continue
 
         # Get seed data for this parcel
-        seed_row = seed_map.get(parcel_id, {})
-
-        # Create base source_http_request object
-        source_http_request = {
-            "method": seed_row.get("method", "GET"),
-            "url": seed_row.get("url", "")
-        }
-
-        request_identifier = seed_row.get("source_identifier", parcel_id)
+        # Get property seed data for this parcel
+        request_identifier = property_seed.get("parcel_id")
+        source_http_request = property_seed.get("source_http_request", {
+            "method": "GET",
+            "url": ""
+        })
 
         try:
             property_data = extract_property_information_from_html(html_content)
@@ -1192,7 +1197,7 @@ def main():
             "request_identifier": request_identifier,
             "city_name": None,
             "country_code": "US",
-            "county_name": seed_row.get("county", None),
+            "county_name": address_data.get("county_jurisdiction"),
             "latitude": None,
             "longitude": None,
             "plus_four_postal_code": None,
@@ -1212,8 +1217,8 @@ def main():
         }
 
         # Parse address from seed CSV if available
-        if seed_row.get('address'):
-            addr_parts = parse_address(seed_row['address'])
+        if address_data.get('full_address'):
+            addr_parts = parse_address(address_data['full_address'])
             address_json.update(addr_parts)
 
         # Extract location data (township, range, section, block, lat/lng) from HTML

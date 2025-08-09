@@ -54,6 +54,27 @@ def remove_null_files(directory):
                     continue
 
 
+def load_property_seed_json():
+    """Load property seed JSON data"""
+    try:
+        with open('property_seed.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("Warning: property_seed.json not found")
+        return {}
+
+
+def load_unnormalized_address_json():
+    """Load unnormalized address JSON data"""
+    try:
+        with open('unnormalized_address.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("Warning: unnormalized_address.json not found")
+        return {}
+
+
+# Load owner and structure data
 with open("./owners/owners_schema.json") as f:
     owners_schema = json.load(f)
 with open("./owners/layout_data.json") as f:
@@ -63,15 +84,9 @@ with open("./owners/structure_data.json") as f:
 with open("./owners/utility_data.json") as f:
     utility_data = json.load(f)
 
-# Load seed data
-seed_data = {}
-if os.path.exists('seed.csv'):
-    with open('seed.csv', newline='', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            sid = row.get('source_identifier')
-            if sid:
-                seed_data[str(sid).strip()] = row
+# Load property and address data instead of seed.csv
+property_seed = load_property_seed_json()
+address_data = load_unnormalized_address_json()
 
 os.makedirs("./data", exist_ok=True)
 input_dir = "./input/"
@@ -86,10 +101,17 @@ for input_file in input_files:
     soup = BeautifulSoup(html, "html.parser")
     addr_key = f"property_{parcel_id}"
 
+    # Get source info from property_seed
+    request_identifier = property_seed.get("parcel_id", parcel_id)
+    source_http_request = property_seed.get("source_http_request", {
+        "method": "GET",
+        "url": f"https://property-data.local/property/{parcel_id}"
+    })
+
     # --- PROPERTY ---
     property_json = {
-        "source_http_request": None,
-        "request_identifier": parcel_id,
+        "source_http_request": source_http_request,
+        "request_identifier": request_identifier,
         "livable_floor_area": None,
         "number_of_units_type": None,
         "parcel_identifier": None,
@@ -213,8 +235,8 @@ for input_file in input_files:
                 if price == 0:
                     price = None
                 sales_json = {
-                    "source_http_request": None,
-                    "request_identifier": f"{parcel_id}_sale_{i + 1}",
+                    "source_http_request": source_http_request,
+                    "request_identifier": f"{request_identifier}_sale_{i + 1}",
                     "ownership_transfer_date": date,
                     "purchase_price_amount": price
                 }
@@ -321,8 +343,8 @@ for input_file in input_files:
         land_val = safe_val(land.get(year))
         monthly_tax_val = safe_val(monthly_tax.get(year))
         tax_json = {
-            "source_http_request": None,
-            "request_identifier": f"{parcel_id}_tax_{year}",
+            "source_http_request": source_http_request,
+            "request_identifier": f"{request_identifier}_tax_{year}",
             "tax_year": clean_int(year),
             "property_assessed_value_amount": assessed_val,
             "property_market_value_amount": market_val,
@@ -352,8 +374,8 @@ for input_file in input_files:
                     seen_persons.add(person_key)
                     person_count += 1
                     person_json = {
-                        "source_http_request": None,
-                        "request_identifier": f"{parcel_id}_person_{i + 1}_{person_count}",
+                        "source_http_request": source_http_request,
+                        "request_identifier": f"{request_identifier}_person_{i + 1}_{person_count}",
                         "birth_date": None,
                         "first_name": owner.get("first_name"),
                         "last_name": owner.get("last_name"),
@@ -372,8 +394,8 @@ for input_file in input_files:
                     seen_companies.add(company_key)
                     company_count += 1
                     company_json = {
-                        "source_http_request": None,
-                        "request_identifier": f"{parcel_id}_company_{i + 1}_{company_count}",
+                        "source_http_request": source_http_request,
+                        "request_identifier": f"{request_identifier}_company_{i + 1}_{company_count}",
                         "name": owner.get("name")
                     }
                     with open(os.path.join(property_dir, f"company_{i + 1}_{company_count}.json"), "w") as f:
@@ -439,16 +461,16 @@ for input_file in input_files:
         for k in required_structure_fields:
             if k not in struct:
                 struct[k] = None
-        struct["source_http_request"] = None
-        struct["request_identifier"] = parcel_id
+        struct["source_http_request"] = source_http_request
+        struct["request_identifier"] = request_identifier
         with open(os.path.join(property_dir, "structure.json"), "w") as f:
             json.dump(struct, f, indent=2)
 
     # --- UTILITY ---
     if addr_key in utility_data:
         util = utility_data[addr_key]
-        util["source_http_request"] = None
-        util["request_identifier"] = parcel_id
+        util["source_http_request"] = source_http_request
+        util["request_identifier"] = request_identifier
         with open(os.path.join(property_dir, "utility.json"), "w") as f:
             json.dump(util, f, indent=2)
 
@@ -478,8 +500,8 @@ for input_file in input_files:
     # Create layout files for each bedroom, full bath, half bath
     for i in range(bedroom_count):
         layout = {
-            "source_http_request": None,
-            "request_identifier": f"{parcel_id}_layout_bedroom_{i + 1}",
+            "source_http_request": source_http_request,
+            "request_identifier": f"{request_identifier}_layout_bedroom_{i + 1}",
             "space_type": "Bedroom",
             "space_index": i + 1,
             "flooring_material_type": None,
@@ -517,8 +539,8 @@ for input_file in input_files:
             json.dump(layout, f, indent=2)
     for i in range(bathroom_count):
         layout = {
-            "source_http_request": None,
-            "request_identifier": f"{parcel_id}_layout_bathroom_{i + 1}",
+            "source_http_request": source_http_request,
+            "request_identifier": f"{request_identifier}_layout_bathroom_{i + 1}",
             "space_type": "Full Bathroom",
             "space_index": i + 1,
             "flooring_material_type": None,
@@ -556,8 +578,8 @@ for input_file in input_files:
             json.dump(layout, f, indent=2)
     for i in range(half_bath_count):
         layout = {
-            "source_http_request": None,
-            "request_identifier": f"{parcel_id}_layout_halfbath_{i + 1}",
+            "source_http_request": source_http_request,
+            "request_identifier": f"{request_identifier}_layout_halfbath_{i + 1}",
             "space_type": "Half Bathroom / Powder Room",
             "space_index": i + 1,
             "flooring_material_type": None,
@@ -606,19 +628,19 @@ for input_file in input_files:
         "driveway_condition", "lot_condition_issues"
     ]
     lot_json = {k: None for k in lot_schema_fields}
-    lot_json["source_http_request"] = None
-    lot_json["request_identifier"] = parcel_id
+    lot_json["source_http_request"] = source_http_request
+    lot_json["request_identifier"] = request_identifier
 
     with open(os.path.join(property_dir, "lot.json"), "w") as f:
         json.dump(lot_json, f, indent=2)
 
     # --- ADDRESS EXTRACTION ---
     address_json = {
-        "source_http_request": None,
-        "request_identifier": parcel_id,
+        "source_http_request": source_http_request,
+        "request_identifier": request_identifier,
         "city_name": None,
         "country_code": "US",
-        "county_name": "PALM BEACH",
+        "county_name": address_data.get("county_jurisdiction", "PALM BEACH"),
         "latitude": None,
         "longitude": None,
         "plus_four_postal_code": None,
@@ -637,10 +659,9 @@ for input_file in input_files:
         "block": None
     }
 
-    # FIRST: Parse from seed.csv if available
-    if parcel_id in seed_data:
-        row = seed_data[parcel_id]
-        addr = row.get('address') or ''
+    # FIRST: Parse from address_data if available
+    if address_data and address_data.get('full_address'):
+        addr = address_data['full_address']
 
         # Extract unit identifier from # symbol
         if '#' in addr:
@@ -649,7 +670,7 @@ for input_file in input_files:
                 unit_part = parts[1].split(',')[0].strip()
                 address_json["unit_identifier"] = f"#{unit_part}" if unit_part else None
 
-        # Parse full address from seed
+        # Parse full address from address data
         addr_parts = [a.strip() for a in addr.split(',')]
         if len(addr_parts) >= 1:
             # Parse street address (before first comma)
@@ -659,7 +680,7 @@ for input_file in input_files:
                 street_addr = street_addr.split('#')[0].strip()
 
             address_parts = street_addr.split()
-            print(address_parts)
+            print(f"Address parts for {parcel_id}:", address_parts)
             if address_parts and address_parts[0].isdigit():
                 address_json["street_number"] = address_parts[0]
 
@@ -749,14 +770,14 @@ for input_file in input_files:
                 if len(plus4) == 4 and plus4.isdigit():
                     address_json["plus_four_postal_code"] = plus4
 
-    # SECOND: Fill missing fields from HTML if seed.csv didn't provide them
+    # SECOND: Fill missing fields from HTML if address_data didn't provide them
     if not address_json["city_name"]:
         city = soup.find(id="MainContent_lblMunicipality")
         if city:
             address_json["city_name"] = city.text.strip().upper()
 
-    # Only parse from HTML if seed.csv didn't provide address info
-    if parcel_id not in seed_data:
+    # Only parse from HTML if address_data didn't provide address info
+    if not address_data or not address_data.get('full_address'):
         location = soup.find(id="MainContent_lblLocation")
         if location:
             address_line = location.text.strip()
