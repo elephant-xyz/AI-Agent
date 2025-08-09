@@ -3184,7 +3184,11 @@ def download_scripts_from_github():
     try:
         for variation in county_variations:
             # GitHub API URL for the counties directory
-            api_url = f"https://api.github.com/repos/elephant-xyz/AI-Agent/contents/counties/{variation}"
+            branch = "feat/refactor-input-output"
+            api_url = (
+                f"https://api.github.com/repos/elephant-xyz/AI-Agent/contents/counties/{variation}"
+                f"?ref={branch}"  # temporary
+            )
 
             logger.info(f"🔄 Trying county variation: '{variation}' - {api_url}")
 
