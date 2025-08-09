@@ -913,15 +913,17 @@ def ensure_dir(path):
 def parse_float(val):
     """Parse string to float, handling currency symbols and commas"""
     if not val:
-        return "0.00"
+        return 0.0
     try:
         # Remove currency symbols, commas, and whitespace
         clean_val = re.sub(r'[$,\s]', '', str(val))
-        float_val = float(clean_val) if clean_val else 0.0
+        return float(clean_val) if clean_val else 0.0
     except (ValueError, TypeError):
-        float_val = 0.0
+        return 0.0
 
-    return f"{float_val:.2f}"
+
+def parse_decimal(val):
+    return f"{parse_float(val):.2f}"
 
 
 def parse_int(val):
@@ -1023,7 +1025,7 @@ def extract_sales_and_taxes_from_html(html_content):
 
             # Map to schema fields
             price_field = sale.get('Sale Price') or sale.get('Price') or sale.get('Amount') or '0'
-            price_val = parse_float(price_field)
+            price_val = parse_decimal(price_field)
 
             date_field = (sale.get('Date') or
                           sale.get('Sale Date') or
@@ -1076,7 +1078,7 @@ def extract_sales_and_taxes_from_html(html_content):
                         tax.get('Market Value') or
                         tax.get('Just Value')
                     ),
-                    'property_building_amount': parse_float(tax.get('Building')),
+                    'property_building_amount': parse_decimal(tax.get('Building')),
                     'property_land_amount': parse_float(tax.get('Land')),
                     'property_taxable_value_amount': parse_float(tax.get('Taxable')),
                     'monthly_tax_amount': None,
