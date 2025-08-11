@@ -321,10 +321,14 @@ def validate_and_extract_simple_zip(zip_path: str) -> bool:
             for f in file_list:
                 print(f"  - {f}")
 
-            # Find unnormalized_address.json
+            # Find unnormalized_address.json (ignore macOS resource files and __MACOSX)
             address_files = []
             for f in file_list:
+                if f.startswith('__MACOSX/'):
+                    continue
                 filename = os.path.basename(f)  # Get just filename, ignore folders
+                if filename.startswith('._'):
+                    continue
                 if filename.lower() == 'unnormalized_address.json' and not f.endswith('/'):
                     address_files.append(f)
 
@@ -333,10 +337,14 @@ def validate_and_extract_simple_zip(zip_path: str) -> bool:
                 print("Please include an unnormalized_address.json file in the ZIP")
                 return False
 
-            # Find HTML or JSON data files (but not the address or property_seed files)
+            # Find HTML or JSON data files (but not the address/property_seed, ignore macOS resource files)
             data_files = []
             for f in file_list:
+                if f.startswith('__MACOSX/'):
+                    continue
                 filename = os.path.basename(f)
+                if filename.startswith('._'):
+                    continue
                 if (filename.lower().endswith(('.html', '.json')) and
                         filename.lower() not in ['unnormalized_address.json', 'property_seed.json'] and
                         not f.endswith('/')):
@@ -364,10 +372,14 @@ def validate_and_extract_simple_zip(zip_path: str) -> bool:
                 target.write(source.read())
             logger.info(f"✅ Extracted {address_file} -> unnormalized_address.json")
 
-            # Also look for and extract property_seed.json if it exists
+            # Also look for and extract property_seed.json if it exists (ignore macOS artifacts)
             property_seed_files = []
             for f in file_list:
+                if f.startswith('__MACOSX/'):
+                    continue
                 filename = os.path.basename(f)
+                if filename.startswith('._'):
+                    continue
                 if filename.lower() == 'property_seed.json' and not f.endswith('/'):
                     property_seed_files.append(f)
 
@@ -546,7 +558,8 @@ async def run_simple_workflow(args=None):
         logger.error(f"❌ Failed: {failed_scripts}")
 
     # Step 7: Check if we should create output ZIP
-    data_dir = os.path.join(BASE_DIR, "submit")
+    # Check the processed data directory first; the submit directory is created later during validation
+    data_dir = os.path.join(BASE_DIR, "data")
     has_data = os.path.exists(data_dir) and len(os.listdir(data_dir)) > 0
 
     if critical_script_failed or not has_data:
