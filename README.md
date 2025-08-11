@@ -50,7 +50,7 @@ zip -r your-data.zip your-data/
 input directory should contain the following files:
 1- unnormalized_address.json class for the property generated while mining seed
 2- property_seed.json class for the property generated while mining seed
-3- County data needs to be transformed represented in json or html file
+3- County data needs to be transformed represented in html file
 
 
 ```
