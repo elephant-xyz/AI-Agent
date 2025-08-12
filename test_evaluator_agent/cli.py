@@ -34,22 +34,20 @@ def main():
         print("Setup completed successfully!")
         return
 
-    # Skip dependency checks if running in transform mode
-    if not args.transform:
-        # Check if dependencies exist, if not, set them up automatically
-        from pathlib import Path
-        mcp_dir = Path.cwd() / "mcp_code_executor"
-        venv_dir = Path.cwd() / ".venv"
+    # Check if dependencies exist, if not, set them up automatically
+    from pathlib import Path
+    mcp_dir = Path.cwd() / "mcp_code_executor"
+    venv_dir = Path.cwd() / ".venv"
 
-        if not venv_dir.exists() or not mcp_dir.exists():
-            print("Dependencies not found, setting up automatically...")
-            if not check_dependencies():
-                print("Please run with --setup flag or install git, npm, and uv manually")
-                sys.exit(1)
-            if not venv_dir.exists() and not setup_uv_venv():
-                sys.exit(1)
-            if not mcp_dir.exists() and not setup_mcp_code_executor():
-                sys.exit(1)
+    if not venv_dir.exists() or not mcp_dir.exists():
+        print("Dependencies not found, setting up automatically...")
+        if not check_dependencies():
+            print("Please run with --setup flag or install git, npm, and uv manually")
+            sys.exit(1)
+        if not venv_dir.exists() and not setup_uv_venv():
+            sys.exit(1)
+        if not mcp_dir.exists() and not setup_mcp_code_executor():
+            sys.exit(1)
 
     try:
         # Pass the arguments to the main function

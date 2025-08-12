@@ -2,42 +2,29 @@ import asyncio
 import argparse
 import hashlib
 import sys
+import subprocess
 from typing import Dict, Any, List, TypedDict, Set, Optional
+import pandas as pd
+import psutil
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain.chat_models import init_chat_model
+from langchain_mcp_adapters.client import (
+    MultiServerMCPClient,
+    StdioConnection,
+)
+from langgraph.prebuilt import create_react_agent
+from dotenv import load_dotenv
 from .utils import *
 from urllib.parse import urlparse, parse_qs
 
-# Conditional imports - only load AI dependencies when not in transform mode
-def load_ai_dependencies():
-    """Load AI-related dependencies only when needed"""
-    global pd, psutil, StateGraph, END, InMemorySaver, init_chat_model
-    global MultiServerMCPClient, StdioConnection, create_react_agent, load_dotenv
-    
-    import pandas as pd
-    import psutil
-    from langgraph.graph import StateGraph, END
-    from langgraph.checkpoint.memory import InMemorySaver
-    from langchain.chat_models import init_chat_model
-    from langchain_mcp_adapters.client import (
-        MultiServerMCPClient,
-        StdioConnection,
-    )
-    from langgraph.prebuilt import create_react_agent
-    from dotenv import load_dotenv
-    
-    return pd, psutil, StateGraph, END, InMemorySaver, init_chat_model, MultiServerMCPClient, StdioConnection, create_react_agent, load_dotenv
-
-# Try to load .env from multiple locations (only if dotenv is available)
-try:
-    from dotenv import load_dotenv
-    for env_path in [".env", os.path.expanduser("~/.env")]:
-        if os.path.exists(env_path):
-            load_dotenv(dotenv_path=env_path)
-            break
-    else:
-        load_dotenv()  # fallback to default behavior
-except ImportError:
-    # dotenv not available, skip loading
-    pass
+# Try to load .env from multiple locations
+for env_path in [".env", os.path.expanduser("~/.env")]:
+    if os.path.exists(env_path):
+        load_dotenv(dotenv_path=env_path)
+        break
+else:
+    load_dotenv()  # fallback to default behavior
 
 # logger = logging.getLogger(__name__)
 #
@@ -450,75 +437,103 @@ async def run_simple_workflow(args=None):
     logger.info("=== Starting Simple Workflow Mode ===")
     print_status("Running in Simple Mode - No AI Agents")
 
-    # Step 1: Import scripts from local counties directory
-    logger.info("Importing scripts from local counties directory...")
-    print_status("Importing scripts from counties directory...")
-    
-    from .utils import import_county_scripts
-    county_modules = import_county_scripts()
-    
-    if not county_modules:
-        logger.error("Failed to import scripts from counties directory")
-        print_status("ERROR: Failed to import scripts from counties directory")
+    # Step 1: Fetch County CID
+    logger.info("Fetching County data group CID from schema manifest...")
+    try:
+        county_data_group_cid = fetch_county_data_group_cid()
+        logger.info(f"✅ Successfully retrieved County CID: {county_data_group_cid}")
+        print_status(f"County CID retrieved: {county_data_group_cid}")
+    except (ConnectionError, ValueError, RuntimeError) as e:
+        error_msg = f"Failed to fetch County data group CID: {str(e)}"
+        logger.error(error_msg)
+        print_status(f"CRITICAL ERROR: {error_msg}")
+        raise SystemExit(f"Workflow failed: {error_msg}")
+
+    # Step 2: Download scripts from GitHub
+    logger.info("Downloading scripts from GitHub repository...")
+    print_status("Downloading scripts from GitHub...")
+    if not download_scripts_from_github():
+        logger.error("Failed to download scripts from GitHub repository")
+        print_status("ERROR: Failed to download scripts from GitHub")
         return False
 
-    # Step 2: Clean up directories
+    # Step 43: Clean up directories
     print_status("Cleaning up directories...")
     cleanup_owners_directory()
 
-    # Step 3: Run all scripts in sequence using imported modules
+    # Step 4: Verify required scripts exist
+    scripts_dir = os.path.join(BASE_DIR, "scripts")
+    if not os.path.exists(scripts_dir):
+        logger.error("Scripts directory not found")
+        print_status("ERROR: Scripts directory not found")
+        return False
+
+    required_script_order = [
+        "owner_processor.py",
+        "structure_extractor.py",
+        "utility_extractor.py",
+        "layout_extractor.py",
+        "data_extractor.py"
+    ]
+
+    python_scripts = [f for f in os.listdir(scripts_dir) if f.endswith('.py')]
+    missing_scripts = [script for script in required_script_order if script not in python_scripts]
+
+    if missing_scripts:
+        logger.error(f"Missing required scripts: {', '.join(missing_scripts)}")
+        print_status(f"ERROR: Missing scripts: {', '.join(missing_scripts)}")
+        return False
+
+    # Step 6: Run all scripts in sequence
     print_status("Running processing scripts...")
 
     # Track script execution results
     script_results = {}
     critical_script_failed = False
 
-    required_script_order = [
-        "owner_processor",
-        "structure_extractor",
-        "utility_extractor",
-        "layout_extractor",
-        "data_extractor"
-    ]
-
     for script_name in required_script_order:
+        script_path = os.path.join(scripts_dir, script_name)
         logger.info(f"Running {script_name}...")
         print_status(f"Running {script_name}...")
 
         try:
-            # Get the module
-            if script_name not in county_modules:
-                logger.error(f"❌ Module {script_name} not found in imported modules")
-                print_status(f"❌ Module {script_name} not found")
-                script_results[script_name] = False
-                if script_name == "data_extractor":
-                    critical_script_failed = True
-                continue
-            
-            module = county_modules[script_name]
-            
-            # Call the main function of the module
-            if hasattr(module, 'main'):
-                # Run the main function
-                module.main()
+            result = subprocess.run(
+                [sys.executable, script_path],
+                cwd=BASE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout per script
+            )
+
+            if result.returncode == 0:
                 logger.info(f"✅ {script_name} completed successfully")
+                if result.stdout.strip():
+                    logger.info(f"Output: {result.stdout.strip()}")
                 print_status(f"✅ {script_name} completed")
                 script_results[script_name] = True
             else:
-                logger.error(f"❌ {script_name} module has no main() function")
-                print_status(f"❌ {script_name} has no main() function")
+                logger.error(f"❌ {script_name} failed with return code {result.returncode}")
+                logger.error(f"STDOUT: {result.stdout}")
+                logger.error(f"STDERR: {result.stderr}")
+                print_status(f"❌ {script_name} failed")
                 script_results[script_name] = False
-                
-                # Mark critical failure for data_extractor
-                if script_name == "data_extractor":
+
+                # Mark critical failure for data_extractor.py
+                if script_name == "data_extractor.py":
                     critical_script_failed = True
                     logger.error(f"❌ CRITICAL: {script_name} failed - this will prevent data extraction")
 
+        except subprocess.TimeoutExpired:
+            logger.error(f"❌ {script_name} timed out after 5 minutes")
+            print_status(f"❌ {script_name} timed out")
+            script_results[script_name] = False
+            if script_name == "data_extractor.py":
+                critical_script_failed = True
         except Exception as e:
             logger.error(f"❌ Error running {script_name}: {e}")
-            print_status(f"❌ Error running {script_name}: {str(e)}")
+            print_status(f"❌ Error running {script_name}")
             script_results[script_name] = False
-            if script_name == "data_extractor":
+            if script_name == "data_extractor.py":
                 critical_script_failed = True
 
     # Check overall script success
@@ -530,8 +545,8 @@ async def run_simple_workflow(args=None):
     if failed_scripts:
         logger.error(f"❌ Failed: {failed_scripts}")
 
-    # Step 4: Check if we should create output ZIP
-    data_dir = os.path.join(BASE_DIR, "data")
+    # Step 7: Check if we should create output ZIP
+    data_dir = os.path.join(BASE_DIR, "submit")
     has_data = os.path.exists(data_dir) and len(os.listdir(data_dir)) > 0
 
     if critical_script_failed or not has_data:
@@ -541,7 +556,22 @@ async def run_simple_workflow(args=None):
         print_status("❌ Workflow failed - no output ZIP will be created")
         return False
 
-    # Step 5: Create output ZIP
+    # Step 8: Run CLI validation
+    logger.info("Running CLI validation...")
+    print_status("Running CLI validation...")
+    cli_success, cli_errors, _ = run_cli_validator("data", county_data_group_cid)
+
+    if not cli_success:
+        logger.error("❌ CLI validation failed")
+        logger.error(f"Validation errors: {cli_errors}")
+        print_status("❌ CLI validation failed")
+        print_status("Check logs for detailed error information")
+        return False
+
+    logger.info("✅ CLI validation passed successfully")
+    print_status("✅ CLI validation passed")
+
+    # Step 9: Create output ZIP only after successful validation
     logger.info("Creating output ZIP file...")
     print_status("Creating output ZIP file...")
 
@@ -565,8 +595,8 @@ async def run_simple_workflow(args=None):
                 with zipfile.ZipFile(output_zip_path, 'r') as zip_ref:
                     file_count = len(zip_ref.namelist())
                     if file_count > 0:
-                        logger.info("✅ Output ZIP created successfully")
-                        print_status("✅ Workflow completed successfully - Output ZIP created")
+                        logger.info("✅ Output ZIP created successfully with validated data")
+                        print_status("✅ Workflow completed successfully - Output ZIP created with validated data")
                         return True
                     else:
                         logger.error("❌ Output ZIP created but is empty")
@@ -2188,20 +2218,49 @@ def fetch_schema_from_ipfs(cid):
     return None
 
 
-# Commented out - not needed for transform workflow
-# @backoff.on_exception(
-#     backoff.expo,
-#     (requests.exceptions.RequestException, ConnectionError, TimeoutError, json.JSONDecodeError),
-#     max_tries=3,
-#     max_time=120,  # 2 minutes total
-#     on_backoff=lambda details: logger.warning(
-#         f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
-#     on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
-# )
+@backoff.on_exception(
+    backoff.expo,
+    (requests.exceptions.RequestException, ConnectionError, TimeoutError, json.JSONDecodeError),
+    max_tries=3,
+    max_time=120,  # 2 minutes total
+    on_backoff=lambda details: logger.warning(
+        f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
+    on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
+)
 def fetch_county_data_group_cid():
-    """Fetch the county data group CID from the schema manifest API - NOT USED IN TRANSFORM MODE"""
-    # This function is not used in transform mode
-    raise NotImplementedError("fetch_county_data_group_cid is not available in transform mode")
+    """Fetch the county data group CID from the schema manifest API"""
+    manifest_url = "https://lexicon.elephant.xyz/json-schemas/schema-manifest.json"
+
+    try:
+        logger.info(f"🔍 Fetching schema manifest from: {manifest_url}")
+        response = requests.get(manifest_url, timeout=30)
+        response.raise_for_status()
+
+        manifest_data = response.json()
+        logger.info("✅ Successfully fetched schema manifest")
+
+        # Extract County data group CID
+        if "County" in manifest_data:
+            county_cid = manifest_data["County"]["ipfsCid"]
+            logger.info(f"📋 Found County data group CID: {county_cid}")
+            return county_cid
+        else:
+            error_msg = "❌ County entry not found in schema manifest"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+    except requests.exceptions.RequestException as e:
+        error_msg = f"❌ Error fetching schema manifest: {e}"
+        logger.error(error_msg)
+        raise ConnectionError(error_msg)
+    except json.JSONDecodeError as e:
+        error_msg = f"❌ Error parsing schema manifest JSON: {e}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    except Exception as e:
+        error_msg = f"❌ Unexpected error fetching schema manifest: {e}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
 
 def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
