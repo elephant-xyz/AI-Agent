@@ -7,9 +7,6 @@ import zipfile
 import shutil
 import json
 import sys
-import requests
-import backoff
-import git
 from urllib.parse import urlparse, parse_qs
 
 BASE_DIR = os.path.abspath(".")
@@ -19,21 +16,21 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 
 log_file_path = os.path.join(LOGS_DIR, f"workflow_{int(time.time())}.log")
 
-file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
 file_handler.setLevel(logging.INFO)
-file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+file_formatter = logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 file_handler.setFormatter(file_formatter)
 
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.CRITICAL)  # Only show critical messages
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    handlers=[file_handler, console_handler]
-)
+logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
 
 logger = logging.getLogger(__name__)
+
 
 def create_output_zip(output_name: str = "transformed_output.zip") -> bool:
     """Create output ZIP file from processed data"""
@@ -42,23 +39,23 @@ def create_output_zip(output_name: str = "transformed_output.zip") -> bool:
     output_zip_path = os.path.join(BASE_DIR, output_name)
     submit_dir = os.path.join(BASE_DIR, "submit")
 
-    if not os.path.exists(submit_dir):  # CHANGED: check submit_dir instead of data_dir
-        print("ERROR: No submit directory found to zip")
+    if not os.path.exists(submit_dir):
+        print("ERROR: No data directory found to zip")
         return False
 
     try:
-        with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
-            # Walk through submit directory and add all files  # CHANGED: submit instead of data
+        with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_ref:
+            # Walk through data directory and add all files
             for root, dirs, files in os.walk(submit_dir):
                 for file in files:
                     file_path = os.path.join(root, file)
-                    # Create archive path relative to submit directory  # CHANGED: submit instead of data
+                    # Create archive path relative to data directory
                     archive_path = os.path.relpath(file_path, submit_dir)
                     zip_ref.write(file_path, archive_path)
                     logger.info(f"Added to ZIP: {archive_path}")
 
         # Count files in the created ZIP
-        with zipfile.ZipFile(output_zip_path, 'r') as zip_ref:
+        with zipfile.ZipFile(output_zip_path, "r") as zip_ref:
             file_count = len(zip_ref.namelist())
 
         print_status(f"Created output ZIP: {output_name} with {file_count} files")
@@ -70,11 +67,12 @@ def create_output_zip(output_name: str = "transformed_output.zip") -> bool:
         logger.error(f"Failed to create output ZIP: {e}")
         return False
 
+
 def cleanup_owners_directory():
     """Clean up the owners and data directories at the start of workflow"""
     directories_to_cleanup = [
         ("owners", os.path.join(BASE_DIR, "owners")),
-        ("data", os.path.join(BASE_DIR, "data"))
+        ("data", os.path.join(BASE_DIR, "data")),
     ]
 
     for dir_name, dir_path in directories_to_cleanup:
@@ -87,7 +85,9 @@ def cleanup_owners_directory():
                 logger.warning(f"⚠️ Could not clean up {dir_name} directory: {e}")
                 print_status(f"Warning: Could not clean up {dir_name} directory: {e}")
         else:
-            logger.info(f"📁 {dir_name.capitalize()} directory does not exist, no cleanup needed")
+            logger.info(
+                f"📁 {dir_name.capitalize()} directory does not exist, no cleanup needed"
+            )
 
         # Create fresh directory
         try:
@@ -97,108 +97,137 @@ def cleanup_owners_directory():
             logger.error(f"❌ Could not create {dir_name} directory: {e}")
             raise
 
-@backoff.on_exception(
-    backoff.expo,
-    (git.GitCommandError, ConnectionError, TimeoutError),
-    max_tries=3,
-    max_time=300,  # 5 minutes total
-    on_backoff=lambda details: logger.warning(
-        f"🔄 Git clone failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
-    on_giveup=lambda details: logger.error(f"💥 Git clone failed after {details['tries']} attempts")
-)
-def download_scripts_from_github():
-    """Download scripts from GitHub using county_jurisdiction from unnormalized_address.json"""
 
-    # Read county name from unnormalized_address.json (which is saved as seed.csv)
-    seed_csv_path = os.path.join(BASE_DIR, "unnormalized_address.json")  # This is actually the unnormalized_address.json content
+def import_county_scripts():
+    """Import scripts directly from counties directory using county_jurisdiction from unnormalized_address.json"""
+    import importlib.util
+    import sys
+
+    # Read county name from unnormalized_address.json
+    seed_csv_path = os.path.join(BASE_DIR, "unnormalized_address.json")
 
     if os.path.exists(seed_csv_path):
         try:
             # Read as JSON since it's actually unnormalized_address.json content
-            with open(seed_csv_path, 'r', encoding='utf-8') as f:
+            with open(seed_csv_path, "r", encoding="utf-8") as f:
                 address_data = json.load(f)
 
-            if 'county_jurisdiction' in address_data:
-                county_name = str(address_data['county_jurisdiction']).strip()
+            if "county_jurisdiction" in address_data:
+                county_name = str(address_data["county_jurisdiction"]).strip()
                 logger.info(f"📍 Found county_jurisdiction: {county_name}")
             else:
-                logger.error("❌ 'county_jurisdiction' field not found in unnormalized_address.json")
-                return False
+                logger.error(
+                    "❌ 'county_jurisdiction' field not found in unnormalized_address.json"
+                )
+                return None
 
         except json.JSONDecodeError as e:
             logger.error(f"❌ Error parsing unnormalized_address.json as JSON: {e}")
-            return False
+            return None
         except Exception as e:
             logger.error(f"❌ Error reading unnormalized_address.json: {e}")
-            return False
+            return None
     else:
-        logger.error("❌ unnormalized_address.json not found (saved as seed.csv)")
-        return False
+        logger.error("❌ unnormalized_address.json not found")
+        return None
 
     if not county_name:
         logger.error("❌ Could not determine county name from county_jurisdiction")
-        return False
+        return None
 
     # Try multiple variations of the county name
     county_variations = [
         county_name.lower(),  # lowercase
         county_name,  # original case
         county_name.title(),  # Title Case
-        county_name.upper()  # UPPERCASE
+        county_name.upper(),  # UPPERCASE
+        county_name.replace(" ", ""),  # No spaces
+        county_name.lower().replace(" ", ""),  # Lowercase no spaces
     ]
 
-    try:
-        for variation in county_variations:
-            # GitHub API URL for the counties directory
-            api_url = f"https://api.github.com/repos/elephant-xyz/AI-Agent/contents/counties/{variation}"
+    # Add special cases for known counties
+    if "miami" in county_name.lower() and "dade" in county_name.lower():
+        county_variations.append("MiamiDade")
+    if "palm" in county_name.lower() and "beach" in county_name.lower():
+        county_variations.append("palm beach")
 
-            logger.info(f"🔄 Trying county variation: '{variation}' - {api_url}")
+    # Required scripts
+    required_scripts = [
+        "owner_processor",
+        "structure_extractor",
+        "utility_extractor",
+        "layout_extractor",
+        "data_extractor",
+    ]
 
-            response = requests.get(api_url, timeout=30)
+    # Try to find the county directory
+    counties_base = os.path.join(BASE_DIR, "counties")
 
-            if response.status_code == 404:
-                logger.warning(f"⚠️ County directory '{variation}' not found, trying next variation...")
-                continue
-            elif response.status_code != 200:
-                logger.warning(
-                    f"⚠️ GitHub API request failed for '{variation}': {response.status_code}, trying next variation...")
-                continue
+    for variation in county_variations:
+        county_path = os.path.join(counties_base, variation)
 
-            # If we get here, we found a valid directory
-            logger.info(f"✅ Found county directory: '{variation}'")
+        if os.path.exists(county_path) and os.path.isdir(county_path):
+            logger.info(f"✅ Found county directory: {county_path}")
 
-            files_data = response.json()
-            local_scripts_dir = os.path.join(BASE_DIR, "scripts")
-            os.makedirs(local_scripts_dir, exist_ok=True)
+            # Import all required scripts as modules
+            modules = {}
+            missing_scripts = []
 
-            copied_files = []
+            for script_name in required_scripts:
+                script_path = os.path.join(county_path, f"{script_name}.py")
 
-            for file_info in files_data:
-                if file_info['name'].endswith('.py') and file_info['type'] == 'file':
-                    # Download the file content
-                    file_response = requests.get(file_info['download_url'], timeout=30)
-                    if file_response.status_code == 200:
-                        file_path = os.path.join(local_scripts_dir, file_info['name'])
-                        with open(file_path, 'w', encoding='utf-8') as f:
-                            f.write(file_response.text)
-                        copied_files.append(file_info['name'])
-                        logger.info(f"📄 Downloaded: {file_info['name']}")
+                if os.path.exists(script_path):
+                    try:
+                        # Create module spec
+                        spec = importlib.util.spec_from_file_location(
+                            f"county_{script_name}", script_path
+                        )
 
-            if copied_files:
-                logger.info(f"✅ Downloaded {len(copied_files)} scripts from {variation}/ directory")
-                return True
-            else:
-                logger.warning(f"⚠️ No Python scripts found in {variation}/ directory")
-                # Continue to try other variations even if this one has no scripts
+                        if spec and spec.loader:
+                            # Create and load module
+                            module = importlib.util.module_from_spec(spec)
+                            sys.modules[f"county_{script_name}"] = module
+                            spec.loader.exec_module(module)
+                            modules[script_name] = module
+                            logger.info(f"📄 Imported: {script_name}.py")
+                        else:
+                            logger.error(
+                                f"❌ Could not create spec for {script_name}.py"
+                            )
+                            missing_scripts.append(script_name)
+                    except Exception as e:
+                        logger.error(f"❌ Error importing {script_name}.py: {e}")
+                        missing_scripts.append(script_name)
+                else:
+                    logger.warning(f"⚠️ Script not found: {script_path}")
+                    missing_scripts.append(script_name)
 
-        # If we've tried all variations and none worked
-        logger.error(f"❌ Could not find county directory for any variation of '{county_name}'")
-        logger.error(f"❌ Tried: {', '.join(county_variations)}")
-        return False
+            if missing_scripts:
+                logger.error(
+                    f"❌ Missing required scripts: {', '.join(missing_scripts)}"
+                )
+                return None
 
-    except Exception as e:
-        logger.error(f"❌ Error using GitHub API: {e}")
-        return False
+            logger.info(
+                f"✅ Successfully imported {len(modules)} scripts from {variation}/ directory"
+            )
+            return modules
+
+    # If we've tried all variations and none worked
+    logger.error(
+        f"❌ Could not find county directory for any variation of '{county_name}'"
+    )
+    logger.error(
+        f"❌ Tried paths under {counties_base}: {', '.join(county_variations)}"
+    )
+    return None
+
+
+def download_scripts_from_github():
+    """Compatibility wrapper - now imports scripts locally instead of downloading"""
+    modules = import_county_scripts()
+    return modules is not None
+
 
 def print_running(node_name):
     """Print running status"""
@@ -210,6 +239,7 @@ def print_status(message):
     """Print status messages to terminal only"""
     print(f"STATUS: {message}")
     logger.info(f"STATUS: {message}")  # Also log to file
+
 
 def print_completed(node_name, success=True):
     """Print completion status"""
@@ -239,6 +269,7 @@ def extract_query_params_and_base_url(url):
 
     try:
         from urllib.parse import urlparse, parse_qs
+
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
@@ -259,7 +290,9 @@ def extract_query_params_and_base_url(url):
         return url, {}
 
 
-def create_parcel_folder(parcel_id, address, method, url, county, headers=None, multi_value_query_string=None):
+def create_parcel_folder(
+    parcel_id, address, method, url, county, headers=None, multi_value_query_string=None
+):
     """Create folder name based on parcel_id"""
     # Create folder name based on parcel_id
     clean_parcel_id = re.sub(r"[^\w\-_]", "_", str(parcel_id))
@@ -278,7 +311,7 @@ def create_parcel_folder(parcel_id, address, method, url, county, headers=None, 
         "source_http_request": {
             "method": method if not is_empty_value(method) else None,
             "url": base_url if not is_empty_value(base_url) else None,
-            "multiValueQueryString": multi_value_query
+            "multiValueQueryString": multi_value_query,
         },
         "county_jurisdiction": county if not is_empty_value(county) else None,
         "request_identifier": parcel_id if not is_empty_value(parcel_id) else None,
@@ -293,7 +326,7 @@ def create_parcel_folder(parcel_id, address, method, url, county, headers=None, 
         "source_http_request": {
             "method": method if not is_empty_value(method) else None,
             "url": base_url if not is_empty_value(base_url) else None,
-            "multiValueQueryString": multi_value_query
+            "multiValueQueryString": multi_value_query,
         },
         "request_identifier": parcel_id if not is_empty_value(parcel_id) else None,
     }
@@ -304,13 +337,15 @@ def create_parcel_folder(parcel_id, address, method, url, county, headers=None, 
     # Create relationship_property_to_address.json
     relationship_data = {
         "from": {"/": "./property_seed.json"},
-        "to": {"/": "./unnormalized_address.json"}
+        "to": {"/": "./unnormalized_address.json"},
     }
 
     # Create root schema
     root_schema = {
         "label": "Seed",
-        "relationships": {"property_seed": {"/": "./relationship_property_to_address.json"}},
+        "relationships": {
+            "property_seed": {"/": "./relationship_property_to_address.json"}
+        },
     }
 
     # Write all JSON files
@@ -343,7 +378,7 @@ def process_csv_to_seed_folders(csv_file_path):
     try:
         created_folders = []
 
-        with open(csv_file_path, 'r', encoding='utf-8') as csvfile:
+        with open(csv_file_path, "r", encoding="utf-8") as csvfile:
             reader = csv.DictReader(csvfile)
             rows = list(reader)  # Read all rows into memory
 
@@ -354,8 +389,11 @@ def process_csv_to_seed_folders(csv_file_path):
                 return False
             elif len(rows) > 1:
                 logger.error(
-                    f"❌ CSV file contains {len(rows)} rows - only 1 row (1 property) is allowed for seed processing")
-                print_status(f"ERROR: CSV contains {len(rows)} rows, only 1 property allowed")
+                    f"❌ CSV file contains {len(rows)} rows - only 1 row (1 property) is allowed for seed processing"
+                )
+                print_status(
+                    f"ERROR: CSV contains {len(rows)} rows, only 1 property allowed"
+                )
                 return False
 
             logger.info(f"✅ CSV validation passed - found exactly 1 row")
@@ -365,27 +403,41 @@ def process_csv_to_seed_folders(csv_file_path):
             for row_num, row in enumerate(rows, 1):
                 try:
                     # Extract required fields from CSV row
-                    parcel_id = row.get('parcel_id', '').strip()
-                    address = row.get('address', '').strip()
-                    method = row.get('method', 'GET').strip()
-                    url = row.get('url', '').strip()
-                    county = row.get('county', '').strip()
-                    headers = row.get('headers', '').strip() if row.get('headers') else None
-                    multi_value_query_string_str = row.get('multiValueQueryString', '').strip()
+                    parcel_id = row.get("parcel_id", "").strip()
+                    address = row.get("address", "").strip()
+                    method = row.get("method", "GET").strip()
+                    url = row.get("url", "").strip()
+                    county = row.get("county", "").strip()
+                    headers = (
+                        row.get("headers", "").strip() if row.get("headers") else None
+                    )
+                    multi_value_query_string_str = row.get(
+                        "multiValueQueryString", ""
+                    ).strip()
 
                     # Parse multiValueQueryString from CSV if provided
                     multi_value_query_string = None
-                    if multi_value_query_string_str and not is_empty_value(multi_value_query_string_str):
+                    if multi_value_query_string_str and not is_empty_value(
+                        multi_value_query_string_str
+                    ):
                         try:
-                            multi_value_query_string = json.loads(multi_value_query_string_str)
-                            logger.info(f"✅ Parsed multiValueQueryString from CSV: {multi_value_query_string}")
+                            multi_value_query_string = json.loads(
+                                multi_value_query_string_str
+                            )
+                            logger.info(
+                                f"✅ Parsed multiValueQueryString from CSV: {multi_value_query_string}"
+                            )
                         except json.JSONDecodeError as e:
-                            logger.warning(f"Row {row_num}: Invalid multiValueQueryString JSON format: {e}")
+                            logger.warning(
+                                f"Row {row_num}: Invalid multiValueQueryString JSON format: {e}"
+                            )
                             logger.warning(f"Raw value: {multi_value_query_string_str}")
 
                     # Validate required data
                     if is_empty_value(parcel_id):
-                        logger.warning(f"Row {row_num}: parcel_id is required but not provided, skipping")
+                        logger.warning(
+                            f"Row {row_num}: parcel_id is required but not provided, skipping"
+                        )
                         continue
 
                     # Parse headers if provided (assuming JSON string)
@@ -394,11 +446,19 @@ def process_csv_to_seed_folders(csv_file_path):
                         try:
                             parsed_headers = json.loads(headers)
                         except json.JSONDecodeError:
-                            logger.warning(f"Row {row_num}: Invalid headers JSON format, ignoring headers")
+                            logger.warning(
+                                f"Row {row_num}: Invalid headers JSON format, ignoring headers"
+                            )
 
                     # Create parcel folder and files
                     folder_name, address_data, property_data = create_parcel_folder(
-                        parcel_id, address, method, url, county, parsed_headers, multi_value_query_string
+                        parcel_id,
+                        address,
+                        method,
+                        url,
+                        county,
+                        parsed_headers,
+                        multi_value_query_string,
                     )
 
                     created_folders.append(folder_name)
@@ -408,7 +468,9 @@ def process_csv_to_seed_folders(csv_file_path):
                     logger.error(f"Error processing row {row_num}: {e}")
                     continue
 
-        logger.info(f"✅ Successfully processed CSV and created {len(created_folders)} seed folders")
+        logger.info(
+            f"✅ Successfully processed CSV and created {len(created_folders)} seed folders"
+        )
         return len(created_folders) > 0
 
     except Exception as e:
@@ -426,7 +488,7 @@ def create_seed_output_zip(output_name: str = "seed_output.zip") -> bool:
         return False
 
     try:
-        with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
+        with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_ref:
             # Walk through output directory and add all files
             for root, dirs, files in os.walk(output_dir):
                 for file in files:
@@ -437,7 +499,7 @@ def create_seed_output_zip(output_name: str = "seed_output.zip") -> bool:
                     logger.info(f"Added to ZIP: {archive_path}")
 
         # Count files in the created ZIP
-        with zipfile.ZipFile(output_zip_path, 'r') as zip_ref:
+        with zipfile.ZipFile(output_zip_path, "r") as zip_ref:
             file_count = len(zip_ref.namelist())
 
         print_status(f"Created seed output ZIP: {output_name} with {file_count} files")
@@ -447,3 +509,4 @@ def create_seed_output_zip(output_name: str = "seed_output.zip") -> bool:
     except Exception as e:
         logger.error(f"Failed to create seed output ZIP: {e}")
         return False
+
