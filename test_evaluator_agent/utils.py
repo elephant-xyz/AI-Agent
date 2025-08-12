@@ -37,7 +37,7 @@ def create_output_zip(output_name: str = "transformed_output.zip") -> bool:
     import zipfile
 
     output_zip_path = os.path.join(BASE_DIR, output_name)
-    submit_dir = os.path.join(BASE_DIR, "submit")
+    submit_dir = os.path.join(BASE_DIR, "data")
 
     if not os.path.exists(submit_dir):
         print("ERROR: No data directory found to zip")
