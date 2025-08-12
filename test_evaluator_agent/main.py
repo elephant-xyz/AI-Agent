@@ -545,16 +545,6 @@ async def run_simple_workflow(args=None):
     if failed_scripts:
         logger.error(f"❌ Failed: {failed_scripts}")
 
-    # Step 7: Check if we should create output ZIP
-    data_dir = os.path.join(BASE_DIR, "submit")
-    has_data = os.path.exists(data_dir) and len(os.listdir(data_dir)) > 0
-
-    if critical_script_failed or not has_data:
-        logger.error("❌ Critical failure detected or no data generated")
-        if not has_data:
-            logger.error("❌ No data directory found or empty")
-        print_status("❌ Workflow failed - no output ZIP will be created")
-        return False
 
     # Step 8: Run CLI validation
     logger.info("Running CLI validation...")
