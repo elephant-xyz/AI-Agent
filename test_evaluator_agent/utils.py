@@ -10,7 +10,7 @@ import sys
 from urllib.parse import urlparse, parse_qs
 
 BASE_DIR = os.path.abspath(".")
-AI_AGENT_ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
+AI_AGENT_ROOT_DIR = os.path.dirname(__file__)   
 
 
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
