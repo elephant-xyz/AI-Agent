@@ -2242,11 +2242,10 @@ def fetch_county_data_group_cid():
 
 def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
     """
-    Prepare data for submission by:
-    1. Copying data to submit directory
-    2. Updating JSON files with seed data
-    3. Building relationship files
-    4. Creating county data group files
+    Prepare data by extending the data directory with:
+    1. Updating JSON files with seed data
+    2. Building relationship files
+    3. Creating county data group files
     
     Returns: (success: bool, error_details: str, error_hash: str)
     """
@@ -2259,22 +2258,13 @@ def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: s
     logger.info(f"🏛️ Using County CID: {county_data_group_cid}")
 
     try:
-        logger.info("📁 Creating submit directory and copying data...")
+        logger.info("📁 Processing data directory...")
 
         # Define directories
-        data_dir = os.path.join(BASE_DIR, data_dir)
-        submit_dir = os.path.join(BASE_DIR, "submit")
+        data_dir_path = os.path.join(BASE_DIR, data_dir)
         unnormalized_address_path = os.path.join(BASE_DIR, "unnormalized_address.json")
 
-        # Create/clean submit directory
-        if os.path.exists(submit_dir):
-            shutil.rmtree(submit_dir)
-            logger.info("🗑️ Cleaned existing submit directory")
-
-        os.makedirs(submit_dir, exist_ok=True)
-        logger.info(f"📁 Created submit directory: {submit_dir}")
-
-        if not os.path.exists(data_dir):
+        if not os.path.exists(data_dir_path):
             logger.error("❌ Data directory not found")
             return False, "Data directory not found", ""
 
@@ -2299,8 +2289,7 @@ def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: s
                     }
                     logger.info(f"✅ Created seed mapping for request_identifier: {request_identifier}")
 
-                    # ALSO: Try to determine the folder name from the HTML file and map it too
-                    data_dir_path = os.path.join(BASE_DIR, "data")
+                    # ALSO: Try to determine the folder name from the data directory and map it too
                     if os.path.exists(data_dir_path):
                         for folder_name in os.listdir(data_dir_path):
                             if os.path.isdir(os.path.join(data_dir_path, folder_name)):
@@ -2324,31 +2313,25 @@ def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: s
         else:
             logger.warning("⚠️ No seed data available, skipping JSON updates")
 
-        # Copy data to submit directory with original folder names and build relationships
-        copied_count = 0
+        # Process data folders directly in the data directory
+        processed_count = 0
 
         # Collect all relationship building errors
         all_relationship_errors = []
 
-        for folder_name in os.listdir(data_dir):
-            src_folder_path = os.path.join(data_dir, folder_name)
+        for folder_name in os.listdir(data_dir_path):
+            folder_path = os.path.join(data_dir_path, folder_name)
 
-            if os.path.isdir(src_folder_path):
-                # Use original folder name (no renaming from uploadresults.csv)
-                target_folder_name = folder_name
-                dst_folder_path = os.path.join(submit_dir, target_folder_name)
-
-                # Copy the entire folder
-                shutil.copytree(src_folder_path, dst_folder_path)
-                logger.info(f"   📂 Copied folder: {folder_name} -> {target_folder_name}")
-                copied_count += 1
+            if os.path.isdir(folder_path):
+                logger.info(f"   📂 Processing folder: {folder_name}")
+                processed_count += 1
 
                 # Update JSON files with seed data (folder_name is the original parcel_id)
                 if folder_name in seed_data:
                     updated_files_count = 0
-                    for file_name in os.listdir(dst_folder_path):
+                    for file_name in os.listdir(folder_path):
                         if file_name.endswith('.json'):
-                            json_file_path = os.path.join(dst_folder_path, file_name)
+                            json_file_path = os.path.join(folder_path, file_name)
 
                             if "relation" in file_name.lower():
                                 logger.info(f"   🔗 Skipping relationship file: {file_name}")
@@ -2359,8 +2342,11 @@ def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: s
                                 with open(json_file_path, 'r', encoding='utf-8') as f:
                                     json_data = json.load(f)
 
-                                json_data['source_http_request'] = seed_data[folder_name]['source_http_request']
-                                json_data['request_identifier'] = str(seed_data[folder_name]['source_identifier'])
+                                # Add seed data fields if not already present
+                                if 'source_http_request' not in json_data:
+                                    json_data['source_http_request'] = seed_data[folder_name]['source_http_request']
+                                if 'request_identifier' not in json_data:
+                                    json_data['request_identifier'] = str(seed_data[folder_name]['source_identifier'])
 
                                 # Write back to file
                                 with open(json_file_path, 'w', encoding='utf-8') as f:
@@ -2380,8 +2366,8 @@ def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: s
                     logger.warning(f"   ⚠️ No seed data found for parcel {folder_name}")
 
                 # Build relationship files dynamically
-                logger.info(f"   🔗 Building relationship files for {target_folder_name}")
-                relationship_files, relationship_errors = build_relationship_files(dst_folder_path)
+                logger.info(f"   🔗 Building relationship files for {folder_name}")
+                relationship_files, relationship_errors = build_relationship_files(folder_path)
 
                 # Add any relationship errors to our collection
                 if relationship_errors:
@@ -2392,7 +2378,7 @@ def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: s
                 if not relationship_errors:
                     # Create county data group file with all relationships
                     county_data_group = create_county_data_group(relationship_files)
-                    county_file_path = os.path.join(dst_folder_path, f"{county_data_group_cid}.json")
+                    county_file_path = os.path.join(folder_path, f"{county_data_group_cid}.json")
 
                     with open(county_file_path, 'w', encoding='utf-8') as f:
                         json.dump(county_data_group, f, indent=2, ensure_ascii=False)
@@ -2408,7 +2394,7 @@ def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: s
                 error_details += f"Error: {error}\n"
             return False, error_details, ""
 
-        logger.info(f"✅ Copied {copied_count} folders and built relationship files")
+        logger.info(f"✅ Processed {processed_count} folders and built relationship files")
 
         # Data preparation completed successfully
         logger.info("✅ Data preparation completed successfully")
