@@ -3,6 +3,10 @@ import argparse
 import hashlib
 import sys
 from typing import Dict, Any, List, TypedDict, Set, Optional
+
+import backoff
+import requests
+
 from .utils import *
 from urllib.parse import urlparse, parse_qs
 
@@ -541,6 +545,7 @@ async def run_simple_workflow(args=None):
         print_status("❌ Workflow failed - no output ZIP will be created")
         return False
 
+    county_data_group_cid = fetch_county_data_group_cid()
     prepare_data_for_submission("data", county_data_group_cid)
 
     # Step 5: Create output ZIP
@@ -2190,20 +2195,49 @@ def fetch_schema_from_ipfs(cid):
     return None
 
 
-# Commented out - not needed for transform workflow
-# @backoff.on_exception(
-#     backoff.expo,
-#     (requests.exceptions.RequestException, ConnectionError, TimeoutError, json.JSONDecodeError),
-#     max_tries=3,
-#     max_time=120,  # 2 minutes total
-#     on_backoff=lambda details: logger.warning(
-#         f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
-#     on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
-# )
+@backoff.on_exception(
+    backoff.expo,
+    (requests.exceptions.RequestException, ConnectionError, TimeoutError, json.JSONDecodeError),
+    max_tries=3,
+    max_time=120,  # 2 minutes total
+    on_backoff=lambda details: logger.warning(
+        f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
+    on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
+)
 def fetch_county_data_group_cid():
-    """Fetch the county data group CID from the schema manifest API - NOT USED IN TRANSFORM MODE"""
-    # This function is not used in transform mode
-    raise NotImplementedError("fetch_county_data_group_cid is not available in transform mode")
+    """Fetch the county data group CID from the schema manifest API"""
+    manifest_url = "https://lexicon.elephant.xyz/json-schemas/schema-manifest.json"
+
+    try:
+        logger.info(f"🔍 Fetching schema manifest from: {manifest_url}")
+        response = requests.get(manifest_url, timeout=30)
+        response.raise_for_status()
+
+        manifest_data = response.json()
+        logger.info("✅ Successfully fetched schema manifest")
+
+        # Extract County data group CID
+        if "County" in manifest_data:
+            county_cid = manifest_data["County"]["ipfsCid"]
+            logger.info(f"📋 Found County data group CID: {county_cid}")
+            return county_cid
+        else:
+            error_msg = "❌ County entry not found in schema manifest"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+    except requests.exceptions.RequestException as e:
+        error_msg = f"❌ Error fetching schema manifest: {e}"
+        logger.error(error_msg)
+        raise ConnectionError(error_msg)
+    except json.JSONDecodeError as e:
+        error_msg = f"❌ Error parsing schema manifest JSON: {e}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    except Exception as e:
+        error_msg = f"❌ Unexpected error fetching schema manifest: {e}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
 
 def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
