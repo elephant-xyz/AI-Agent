@@ -327,81 +327,90 @@ async def run_simple_workflow():
         print_status("ERROR: Failed to load schemas")
         return False
 
-    # Step 4: Clean up directories
+    # Step 4: Import scripts from local counties directory
+    logger.info("Importing scripts from local counties directory...")
+    print_status("Importing scripts from counties directory...")
+
+    from .utils import import_county_scripts
+    county_modules = import_county_scripts()
+
+    if not county_modules:
+        logger.error("Failed to import scripts from counties directory")
+        print_status("ERROR: Failed to import scripts from counties directory")
+        return False
+
+    # Step 5: Clean up directories
     print_status("Cleaning up directories...")
     cleanup_owners_directory()
 
-    # Step 5: Run all downloaded scripts
-    scripts_dir = os.path.join(BASE_DIR, "scripts")
-    if not os.path.exists(scripts_dir):
-        logger.error("Scripts directory not found")
-        print_status("ERROR: Scripts directory not found")
-        return False
+    # Step 6: Run all scripts in sequence using imported modules
+    print_status("Running processing scripts...")
 
-    # Find all Python scripts
-    python_scripts = [f for f in os.listdir(scripts_dir) if f.endswith('.py')]
-    if not python_scripts:
-        logger.error("No Python scripts found in scripts directory")
-        print_status("ERROR: No Python scripts found")
-        return False
+    # Track script execution results
+    script_results = {}
+    critical_script_failed = False
 
-    logger.info(f"Found {len(python_scripts)} Python scripts to execute")
-    print_status(f"Running {len(python_scripts)} scripts...")
-
-    # Define the required execution order
     required_script_order = [
-        "owner_processor.py",
-        "structure_extractor.py",
-        "utility_extractor.py",
-        "layout_extractor.py",
-        "data_extractor.py"
+        "owner_processor",
+        "structure_extractor",
+        "utility_extractor",
+        "layout_extractor",
+        "data_extractor"
     ]
 
-    # Check if all required scripts exist
-    missing_scripts = []
     for script_name in required_script_order:
-        if script_name not in python_scripts:
-            missing_scripts.append(script_name)
-
-    if missing_scripts:
-        logger.error(f"Missing required scripts: {', '.join(missing_scripts)}")
-        print_status(f"ERROR: Missing scripts: {', '.join(missing_scripts)}")
-        return False
-
-    # Execute scripts in the specified order
-    for script_name in required_script_order:
-        script_path = os.path.join(scripts_dir, script_name)
-        logger.info(f"Executing script: {script_name}")
+        logger.info(f"Running {script_name}...")
         print_status(f"Running {script_name}...")
 
         try:
-            result = subprocess.run(
-                [sys.executable, script_path],
-                cwd=BASE_DIR,
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 minute timeout per script
-            )
+            # Get the module
+            if script_name not in county_modules:
+                logger.error(f"❌ Module {script_name} not found in imported modules")
+                print_status(f"❌ Module {script_name} not found")
+                script_results[script_name] = False
+                if script_name == "data_extractor":
+                    critical_script_failed = True
+                continue
 
-            if result.returncode == 0:
-                logger.info(f"✅ Script {script_name} completed successfully")
-                if result.stdout.strip():
-                    logger.info(f"Output: {result.stdout.strip()}")
+            module = county_modules[script_name]
+
+            # Call the main function of the module
+            if hasattr(module, 'main'):
+                # Run the main function
+                module.main()
+                logger.info(f"✅ {script_name} completed successfully")
                 print_status(f"✅ {script_name} completed")
+                script_results[script_name] = True
             else:
-                logger.error(f"❌ Script {script_name} failed with return code {result.returncode}")
-                logger.error(f"STDOUT: {result.stdout}")
-                logger.error(f"STDERR: {result.stderr}")
-                print_status(f"❌ {script_name} failed")
-                # Continue with next script instead of stopping
+                logger.error(f"❌ {script_name} module has no main() function")
+                print_status(f"❌ {script_name} has no main() function")
+                script_results[script_name] = False
 
-        except subprocess.TimeoutExpired:
-            logger.error(f"❌ Script {script_name} timed out after 5 minutes")
-            print_status(f"❌ {script_name} timed out")
+                # Mark critical failure for data_extractor
+                if script_name == "data_extractor":
+                    critical_script_failed = True
+                    logger.error(f"❌ CRITICAL: {script_name} failed - this will prevent data extraction")
+
         except Exception as e:
-            logger.error(f"❌ Error running script {script_name}: {e}")
-            print_status(f"❌ Error running {script_name}")
+            logger.error(f"❌ Error running {script_name}: {e}")
+            print_status(f"❌ Error running {script_name}: {str(e)}")
+            script_results[script_name] = False
+            if script_name == "data_extractor":
+                critical_script_failed = True
 
+    # Check overall script success
+    failed_scripts = [name for name, success in script_results.items() if not success]
+    successful_scripts = [name for name, success in script_results.items() if success]
+
+    logger.info(f"Script execution summary:")
+    logger.info(f"✅ Successful: {successful_scripts}")
+    if failed_scripts:
+        logger.error(f"❌ Failed: {failed_scripts}")
+
+    if critical_script_failed:
+        logger.error("❌ Critical failure detected")
+        print_status("❌ Workflow failed")
+        return False
 
     # Step 6: Run CLI validation
     logger.info("Running CLI validation...")
