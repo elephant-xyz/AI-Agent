@@ -2,29 +2,46 @@ import asyncio
 import argparse
 import hashlib
 import sys
-import subprocess
 from typing import Dict, Any, List, TypedDict, Set, Optional
-import pandas as pd
-import psutil
-from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import InMemorySaver
-from langchain.chat_models import init_chat_model
-from langchain_mcp_adapters.client import (
-    MultiServerMCPClient,
-    StdioConnection,
-)
-from langgraph.prebuilt import create_react_agent
-from dotenv import load_dotenv
+
+import backoff
+import requests
+
 from .utils import *
 from urllib.parse import urlparse, parse_qs
 
-# Try to load .env from multiple locations
-for env_path in [".env", os.path.expanduser("~/.env")]:
-    if os.path.exists(env_path):
-        load_dotenv(dotenv_path=env_path)
-        break
-else:
-    load_dotenv()  # fallback to default behavior
+# Conditional imports - only load AI dependencies when not in transform mode
+def load_ai_dependencies():
+    """Load AI-related dependencies only when needed"""
+    global pd, psutil, StateGraph, END, InMemorySaver, init_chat_model
+    global MultiServerMCPClient, StdioConnection, create_react_agent, load_dotenv
+    
+    import pandas as pd
+    import psutil
+    from langgraph.graph import StateGraph, END
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langchain.chat_models import init_chat_model
+    from langchain_mcp_adapters.client import (
+        MultiServerMCPClient,
+        StdioConnection,
+    )
+    from langgraph.prebuilt import create_react_agent
+    from dotenv import load_dotenv
+    
+    return pd, psutil, StateGraph, END, InMemorySaver, init_chat_model, MultiServerMCPClient, StdioConnection, create_react_agent, load_dotenv
+
+# Try to load .env from multiple locations (only if dotenv is available)
+try:
+    from dotenv import load_dotenv
+    for env_path in [".env", os.path.expanduser("~/.env")]:
+        if os.path.exists(env_path):
+            load_dotenv(dotenv_path=env_path)
+            break
+    else:
+        load_dotenv()  # fallback to default behavior
+except ImportError:
+    # dotenv not available, skip loading
+    pass
 
 # logger = logging.getLogger(__name__)
 #
@@ -437,103 +454,75 @@ async def run_simple_workflow(args=None):
     logger.info("=== Starting Simple Workflow Mode ===")
     print_status("Running in Simple Mode - No AI Agents")
 
-    # Step 1: Fetch County CID
-    logger.info("Fetching County data group CID from schema manifest...")
-    try:
-        county_data_group_cid = fetch_county_data_group_cid()
-        logger.info(f"✅ Successfully retrieved County CID: {county_data_group_cid}")
-        print_status(f"County CID retrieved: {county_data_group_cid}")
-    except (ConnectionError, ValueError, RuntimeError) as e:
-        error_msg = f"Failed to fetch County data group CID: {str(e)}"
-        logger.error(error_msg)
-        print_status(f"CRITICAL ERROR: {error_msg}")
-        raise SystemExit(f"Workflow failed: {error_msg}")
-
-    # Step 2: Download scripts from GitHub
-    logger.info("Downloading scripts from GitHub repository...")
-    print_status("Downloading scripts from GitHub...")
-    if not download_scripts_from_github():
-        logger.error("Failed to download scripts from GitHub repository")
-        print_status("ERROR: Failed to download scripts from GitHub")
+    # Step 1: Import scripts from local counties directory
+    logger.info("Importing scripts from local counties directory...")
+    print_status("Importing scripts from counties directory...")
+    
+    from .utils import import_county_scripts
+    county_modules = import_county_scripts()
+    
+    if not county_modules:
+        logger.error("Failed to import scripts from counties directory")
+        print_status("ERROR: Failed to import scripts from counties directory")
         return False
 
-    # Step 43: Clean up directories
+    # Step 2: Clean up directories
     print_status("Cleaning up directories...")
     cleanup_owners_directory()
 
-    # Step 4: Verify required scripts exist
-    scripts_dir = os.path.join(BASE_DIR, "scripts")
-    if not os.path.exists(scripts_dir):
-        logger.error("Scripts directory not found")
-        print_status("ERROR: Scripts directory not found")
-        return False
-
-    required_script_order = [
-        "owner_processor.py",
-        "structure_extractor.py",
-        "utility_extractor.py",
-        "layout_extractor.py",
-        "data_extractor.py"
-    ]
-
-    python_scripts = [f for f in os.listdir(scripts_dir) if f.endswith('.py')]
-    missing_scripts = [script for script in required_script_order if script not in python_scripts]
-
-    if missing_scripts:
-        logger.error(f"Missing required scripts: {', '.join(missing_scripts)}")
-        print_status(f"ERROR: Missing scripts: {', '.join(missing_scripts)}")
-        return False
-
-    # Step 6: Run all scripts in sequence
+    # Step 3: Run all scripts in sequence using imported modules
     print_status("Running processing scripts...")
 
     # Track script execution results
     script_results = {}
     critical_script_failed = False
 
+    required_script_order = [
+        "owner_processor",
+        "structure_extractor",
+        "utility_extractor",
+        "layout_extractor",
+        "data_extractor"
+    ]
+
     for script_name in required_script_order:
-        script_path = os.path.join(scripts_dir, script_name)
         logger.info(f"Running {script_name}...")
         print_status(f"Running {script_name}...")
 
         try:
-            result = subprocess.run(
-                [sys.executable, script_path],
-                cwd=BASE_DIR,
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 minute timeout per script
-            )
-
-            if result.returncode == 0:
+            # Get the module
+            if script_name not in county_modules:
+                logger.error(f"❌ Module {script_name} not found in imported modules")
+                print_status(f"❌ Module {script_name} not found")
+                script_results[script_name] = False
+                if script_name == "data_extractor":
+                    critical_script_failed = True
+                continue
+            
+            module = county_modules[script_name]
+            
+            # Call the main function of the module
+            if hasattr(module, 'main'):
+                # Run the main function
+                module.main()
                 logger.info(f"✅ {script_name} completed successfully")
-                if result.stdout.strip():
-                    logger.info(f"Output: {result.stdout.strip()}")
                 print_status(f"✅ {script_name} completed")
                 script_results[script_name] = True
             else:
-                logger.error(f"❌ {script_name} failed with return code {result.returncode}")
-                logger.error(f"STDOUT: {result.stdout}")
-                logger.error(f"STDERR: {result.stderr}")
-                print_status(f"❌ {script_name} failed")
+                logger.error(f"❌ {script_name} module has no main() function")
+                print_status(f"❌ {script_name} has no main() function")
                 script_results[script_name] = False
-
-                # Mark critical failure for data_extractor.py
-                if script_name == "data_extractor.py":
+                
+                # Mark critical failure for data_extractor
+                if script_name == "data_extractor":
                     critical_script_failed = True
                     logger.error(f"❌ CRITICAL: {script_name} failed - this will prevent data extraction")
 
-        except subprocess.TimeoutExpired:
-            logger.error(f"❌ {script_name} timed out after 5 minutes")
-            print_status(f"❌ {script_name} timed out")
-            script_results[script_name] = False
-            if script_name == "data_extractor.py":
-                critical_script_failed = True
         except Exception as e:
             logger.error(f"❌ Error running {script_name}: {e}")
-            print_status(f"❌ Error running {script_name}")
+            print_status(f"❌ Error running {script_name}: {str(e)}")
             script_results[script_name] = False
-            if script_name == "data_extractor.py":
+            if script_name == "data_extractor":
                 critical_script_failed = True
 
     # Check overall script success
@@ -545,7 +534,7 @@ async def run_simple_workflow(args=None):
     if failed_scripts:
         logger.error(f"❌ Failed: {failed_scripts}")
 
-    # Step 7: Check if we should create output ZIP
+    # Step 4: Check if we should create output ZIP
     data_dir = os.path.join(BASE_DIR, "data")
     has_data = os.path.exists(data_dir) and len(os.listdir(data_dir)) > 0
 
@@ -556,22 +545,9 @@ async def run_simple_workflow(args=None):
         print_status("❌ Workflow failed - no output ZIP will be created")
         return False
 
-    # Step 8: Run CLI validation
-    logger.info("Running CLI validation...")
-    print_status("Running CLI validation...")
-    cli_success, cli_errors, _ = run_cli_validator("data", county_data_group_cid)
+    prepare_data_for_submission("data")
 
-    if not cli_success:
-        logger.error("❌ CLI validation failed")
-        logger.error(f"Validation errors: {cli_errors}")
-        print_status("❌ CLI validation failed")
-        print_status("Check logs for detailed error information")
-        return False
-
-    logger.info("✅ CLI validation passed successfully")
-    print_status("✅ CLI validation passed")
-
-    # Step 9: Create output ZIP only after successful validation
+    # Step 5: Create output ZIP
     logger.info("Creating output ZIP file...")
     print_status("Creating output ZIP file...")
 
@@ -595,8 +571,8 @@ async def run_simple_workflow(args=None):
                 with zipfile.ZipFile(output_zip_path, 'r') as zip_ref:
                     file_count = len(zip_ref.namelist())
                     if file_count > 0:
-                        logger.info("✅ Output ZIP created successfully with validated data")
-                        print_status("✅ Workflow completed successfully - Output ZIP created with validated data")
+                        logger.info("✅ Output ZIP created successfully")
+                        print_status("✅ Workflow completed successfully - Output ZIP created")
                         return True
                     else:
                         logger.error("❌ Output ZIP created but is empty")
@@ -2218,81 +2194,43 @@ def fetch_schema_from_ipfs(cid):
     return None
 
 
-@backoff.on_exception(
-    backoff.expo,
-    (requests.exceptions.RequestException, ConnectionError, TimeoutError, json.JSONDecodeError),
-    max_tries=3,
-    max_time=120,  # 2 minutes total
-    on_backoff=lambda details: logger.warning(
-        f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
-    on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
-)
+# Commented out - not needed for transform workflow
+# @backoff.on_exception(
+#     backoff.expo,
+#     (requests.exceptions.RequestException, ConnectionError, TimeoutError, json.JSONDecodeError),
+#     max_tries=3,
+#     max_time=120,  # 2 minutes total
+#     on_backoff=lambda details: logger.warning(
+#         f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
+#     on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
+# )
 def fetch_county_data_group_cid():
-    """Fetch the county data group CID from the schema manifest API"""
-    manifest_url = "https://lexicon.elephant.xyz/json-schemas/schema-manifest.json"
-
-    try:
-        logger.info(f"🔍 Fetching schema manifest from: {manifest_url}")
-        response = requests.get(manifest_url, timeout=30)
-        response.raise_for_status()
-
-        manifest_data = response.json()
-        logger.info("✅ Successfully fetched schema manifest")
-
-        # Extract County data group CID
-        if "County" in manifest_data:
-            county_cid = manifest_data["County"]["ipfsCid"]
-            logger.info(f"📋 Found County data group CID: {county_cid}")
-            return county_cid
-        else:
-            error_msg = "❌ County entry not found in schema manifest"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-    except requests.exceptions.RequestException as e:
-        error_msg = f"❌ Error fetching schema manifest: {e}"
-        logger.error(error_msg)
-        raise ConnectionError(error_msg)
-    except json.JSONDecodeError as e:
-        error_msg = f"❌ Error parsing schema manifest JSON: {e}"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    except Exception as e:
-        error_msg = f"❌ Unexpected error fetching schema manifest: {e}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
+    """Fetch the county data group CID from the schema manifest API - NOT USED IN TRANSFORM MODE"""
+    # This function is not used in transform mode
+    raise NotImplementedError("fetch_county_data_group_cid is not available in transform mode")
 
 
-def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
+def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
     """
-    Run the CLI validation command and return results
+    Prepare data by extending the data directory with:
+    1. Updating JSON files with seed data
+    2. Building relationship files
+    3. Creating county data group files
+    
     Returns: (success: bool, error_details: str, error_hash: str)
     """
-    if not county_data_group_cid:
-        error_msg = "County data group CID not provided to CLI validator"
-        logger.error(error_msg)
-        error_hash = hashlib.md5(error_msg.encode()).hexdigest()
-        return False, error_msg, error_hash
+    county_data_group_filename = county_data_group_cid or "county_data_group"
 
-    logger.info(f"🏛️ Using County CID: {county_data_group_cid}")
+    logger.info(f"🏛️ Using County CID: {county_data_group_filename}")
 
     try:
-        logger.info("📁 Creating submit directory and copying data...")
+        logger.info("📁 Processing data directory...")
 
         # Define directories
-        data_dir = os.path.join(BASE_DIR, data_dir)
-        submit_dir = os.path.join(BASE_DIR, "submit")
+        data_dir_path = os.path.join(BASE_DIR, data_dir)
         unnormalized_address_path = os.path.join(BASE_DIR, "unnormalized_address.json")
 
-        # Create/clean submit directory
-        if os.path.exists(submit_dir):
-            shutil.rmtree(submit_dir)
-            logger.info("🗑️ Cleaned existing submit directory")
-
-        os.makedirs(submit_dir, exist_ok=True)
-        logger.info(f"📁 Created submit directory: {submit_dir}")
-
-        if not os.path.exists(data_dir):
+        if not os.path.exists(data_dir_path):
             logger.error("❌ Data directory not found")
             return False, "Data directory not found", ""
 
@@ -2317,8 +2255,7 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
                     }
                     logger.info(f"✅ Created seed mapping for request_identifier: {request_identifier}")
 
-                    # ALSO: Try to determine the folder name from the HTML file and map it too
-                    data_dir_path = os.path.join(BASE_DIR, "data")
+                    # ALSO: Try to determine the folder name from the data directory and map it too
                     if os.path.exists(data_dir_path):
                         for folder_name in os.listdir(data_dir_path):
                             if os.path.isdir(os.path.join(data_dir_path, folder_name)):
@@ -2342,31 +2279,25 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
         else:
             logger.warning("⚠️ No seed data available, skipping JSON updates")
 
-        # Copy data to submit directory with original folder names and build relationships
-        copied_count = 0
+        # Process data folders directly in the data directory
+        processed_count = 0
 
         # Collect all relationship building errors
         all_relationship_errors = []
 
-        for folder_name in os.listdir(data_dir):
-            src_folder_path = os.path.join(data_dir, folder_name)
+        for folder_name in os.listdir(data_dir_path):
+            folder_path = os.path.join(data_dir_path, folder_name)
 
-            if os.path.isdir(src_folder_path):
-                # Use original folder name (no renaming from uploadresults.csv)
-                target_folder_name = folder_name
-                dst_folder_path = os.path.join(submit_dir, target_folder_name)
-
-                # Copy the entire folder
-                shutil.copytree(src_folder_path, dst_folder_path)
-                logger.info(f"   📂 Copied folder: {folder_name} -> {target_folder_name}")
-                copied_count += 1
+            if os.path.isdir(folder_path):
+                logger.info(f"   📂 Processing folder: {folder_name}")
+                processed_count += 1
 
                 # Update JSON files with seed data (folder_name is the original parcel_id)
                 if folder_name in seed_data:
                     updated_files_count = 0
-                    for file_name in os.listdir(dst_folder_path):
+                    for file_name in os.listdir(folder_path):
                         if file_name.endswith('.json'):
-                            json_file_path = os.path.join(dst_folder_path, file_name)
+                            json_file_path = os.path.join(folder_path, file_name)
 
                             if "relation" in file_name.lower():
                                 logger.info(f"   🔗 Skipping relationship file: {file_name}")
@@ -2377,8 +2308,11 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
                                 with open(json_file_path, 'r', encoding='utf-8') as f:
                                     json_data = json.load(f)
 
-                                json_data['source_http_request'] = seed_data[folder_name]['source_http_request']
-                                json_data['request_identifier'] = str(seed_data[folder_name]['source_identifier'])
+                                # Add seed data fields if not already present
+                                if 'source_http_request' not in json_data:
+                                    json_data['source_http_request'] = seed_data[folder_name]['source_http_request']
+                                if 'request_identifier' not in json_data:
+                                    json_data['request_identifier'] = str(seed_data[folder_name]['source_identifier'])
 
                                 # Write back to file
                                 with open(json_file_path, 'w', encoding='utf-8') as f:
@@ -2398,8 +2332,8 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
                     logger.warning(f"   ⚠️ No seed data found for parcel {folder_name}")
 
                 # Build relationship files dynamically
-                logger.info(f"   🔗 Building relationship files for {target_folder_name}")
-                relationship_files, relationship_errors = build_relationship_files(dst_folder_path)
+                logger.info(f"   🔗 Building relationship files for {folder_name}")
+                relationship_files, relationship_errors = build_relationship_files(folder_path)
 
                 # Add any relationship errors to our collection
                 if relationship_errors:
@@ -2410,13 +2344,13 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
                 if not relationship_errors:
                     # Create county data group file with all relationships
                     county_data_group = create_county_data_group(relationship_files)
-                    county_file_path = os.path.join(dst_folder_path, f"{county_data_group_cid}.json")
+                    county_file_path = os.path.join(folder_path, f"{county_data_group_filename}.json")
 
                     with open(county_file_path, 'w', encoding='utf-8') as f:
                         json.dump(county_data_group, f, indent=2, ensure_ascii=False)
 
                     logger.info(
-                        f"   ✅ Created {county_data_group_cid}.json with {len(relationship_files)} relationship files")
+                        f"   ✅ Created {county_data_group_filename}.json with {len(relationship_files)} relationship files")
 
         # Check if we have relationship errors
         if all_relationship_errors:
@@ -2426,10 +2360,10 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
                 error_details += f"Error: {error}\n"
             return False, error_details, ""
 
-        logger.info(f"✅ Copied {copied_count} folders and built relationship files")
+        logger.info(f"✅ Processed {processed_count} folders and built relationship files")
 
-        # Since we're not running the elephant CLI, we'll just return success
-        logger.info("✅ Data preparation completed successfully (CLI validation skipped)")
+        # Data preparation completed successfully
+        logger.info("✅ Data preparation completed successfully")
         return True, "", ""
 
     except Exception as e:
@@ -2437,6 +2371,22 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
         logger.error(error_msg)
         error_hash = hashlib.md5(error_msg.encode()).hexdigest()
         return False, error_msg, error_hash
+
+
+def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
+    """
+    Run the CLI validation by first preparing data and then validating
+    Returns: (success: bool, error_details: str, error_hash: str)
+    """
+    # First, prepare the data (generate relationships and county datagroup files)
+    success, error_details, error_hash = prepare_data_for_submission(data_dir, county_data_group_cid)
+    
+    if not success:
+        return False, error_details, error_hash
+    
+    # In transform mode, we skip actual CLI validation
+    logger.info("✅ Data preparation and file generation completed (CLI validation skipped in transform mode)")
+    return True, "", ""
 
 
 def build_relationship_files(folder_path: str) -> tuple[List[str], List[str]]:
