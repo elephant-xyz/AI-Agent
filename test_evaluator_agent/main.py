@@ -545,7 +545,6 @@ async def run_simple_workflow(args=None):
         print_status("❌ Workflow failed - no output ZIP will be created")
         return False
 
-    county_data_group_cid = fetch_county_data_group_cid()
     prepare_data_for_submission("data", county_data_group_cid)
 
     # Step 5: Create output ZIP
@@ -2195,49 +2194,20 @@ def fetch_schema_from_ipfs(cid):
     return None
 
 
-@backoff.on_exception(
-    backoff.expo,
-    (requests.exceptions.RequestException, ConnectionError, TimeoutError, json.JSONDecodeError),
-    max_tries=3,
-    max_time=120,  # 2 minutes total
-    on_backoff=lambda details: logger.warning(
-        f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
-    on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
-)
+# Commented out - not needed for transform workflow
+# @backoff.on_exception(
+#     backoff.expo,
+#     (requests.exceptions.RequestException, ConnectionError, TimeoutError, json.JSONDecodeError),
+#     max_tries=3,
+#     max_time=120,  # 2 minutes total
+#     on_backoff=lambda details: logger.warning(
+#         f"🔄 County CID fetch failed, retrying in {details['wait']:.1f}s (attempt {details['tries']})"),
+#     on_giveup=lambda details: logger.error(f"💥 County CID fetch failed after {details['tries']} attempts")
+# )
 def fetch_county_data_group_cid():
-    """Fetch the county data group CID from the schema manifest API"""
-    manifest_url = "https://lexicon.elephant.xyz/json-schemas/schema-manifest.json"
-
-    try:
-        logger.info(f"🔍 Fetching schema manifest from: {manifest_url}")
-        response = requests.get(manifest_url, timeout=30)
-        response.raise_for_status()
-
-        manifest_data = response.json()
-        logger.info("✅ Successfully fetched schema manifest")
-
-        # Extract County data group CID
-        if "County" in manifest_data:
-            county_cid = manifest_data["County"]["ipfsCid"]
-            logger.info(f"📋 Found County data group CID: {county_cid}")
-            return county_cid
-        else:
-            error_msg = "❌ County entry not found in schema manifest"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-    except requests.exceptions.RequestException as e:
-        error_msg = f"❌ Error fetching schema manifest: {e}"
-        logger.error(error_msg)
-        raise ConnectionError(error_msg)
-    except json.JSONDecodeError as e:
-        error_msg = f"❌ Error parsing schema manifest JSON: {e}"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    except Exception as e:
-        error_msg = f"❌ Unexpected error fetching schema manifest: {e}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
+    """Fetch the county data group CID from the schema manifest API - NOT USED IN TRANSFORM MODE"""
+    # This function is not used in transform mode
+    raise NotImplementedError("fetch_county_data_group_cid is not available in transform mode")
 
 
 def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
@@ -2249,13 +2219,9 @@ def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: s
     
     Returns: (success: bool, error_details: str, error_hash: str)
     """
-    if not county_data_group_cid:
-        error_msg = "County data group CID not provided"
-        logger.error(error_msg)
-        error_hash = hashlib.md5(error_msg.encode()).hexdigest()
-        return False, error_msg, error_hash
+    county_data_group_filename = county_data_group_cid or "county_data_group"
 
-    logger.info(f"🏛️ Using County CID: {county_data_group_cid}")
+    logger.info(f"🏛️ Using County CID: {county_data_group_filename}")
 
     try:
         logger.info("📁 Processing data directory...")
@@ -2378,13 +2344,13 @@ def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: s
                 if not relationship_errors:
                     # Create county data group file with all relationships
                     county_data_group = create_county_data_group(relationship_files)
-                    county_file_path = os.path.join(folder_path, f"{county_data_group_cid}.json")
+                    county_file_path = os.path.join(folder_path, f"{county_data_group_filename}.json")
 
                     with open(county_file_path, 'w', encoding='utf-8') as f:
                         json.dump(county_data_group, f, indent=2, ensure_ascii=False)
 
                     logger.info(
-                        f"   ✅ Created {county_data_group_cid}.json with {len(relationship_files)} relationship files")
+                        f"   ✅ Created {county_data_group_filename}.json with {len(relationship_files)} relationship files")
 
         # Check if we have relationship errors
         if all_relationship_errors:
