@@ -12,8 +12,6 @@ from urllib.parse import urlparse, parse_qs
 BASE_DIR = os.path.abspath(".")
 LOCAL_DIR = os.path.dirname(__file__)
 
-print(f"content in LOCAL_DIR: {os.listdir(LOCAL_DIR)}")
-
 
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)

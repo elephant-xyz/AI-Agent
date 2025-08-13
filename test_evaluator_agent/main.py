@@ -545,7 +545,7 @@ async def run_simple_workflow(args=None):
         print_status("❌ Workflow failed - no output ZIP will be created")
         return False
 
-    prepare_data_for_submission("data", county_data_group_cid)
+    prepare_data_for_submission("data")
 
     # Step 5: Create output ZIP
     logger.info("Creating output ZIP file...")
