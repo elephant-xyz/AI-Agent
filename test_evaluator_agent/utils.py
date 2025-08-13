@@ -1,7 +1,7 @@
+import csv
 import logging
 import os
 import time
-import json
 import sys
 
 BASE_DIR = os.path.abspath(".")
@@ -22,46 +22,41 @@ file_handler.setFormatter(file_formatter)
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.CRITICAL)  # Only show critical messages
 
-
 logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
 
 logger = logging.getLogger(__name__)
 
+
 def import_county_scripts():
-    """Import scripts directly from counties directory using county_jurisdiction from unnormalized_address.json"""
+    """Import scripts directly from counties directory using county name from seed.csv"""
     import importlib.util
     import sys
 
-    # Read county name from unnormalized_address.json
-    seed_csv_path = os.path.join(BASE_DIR, "unnormalized_address.json")
+    # Read county name from seed.csv
+    seed_csv_path = os.path.join(BASE_DIR, "seed.csv")
 
     if os.path.exists(seed_csv_path):
         try:
-            # Read as JSON since it's actually unnormalized_address.json content
-            with open(seed_csv_path, "r", encoding="utf-8") as f:
-                address_data = json.load(f)
+            with open(seed_csv_path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)  # Reads each row as a dict
+                first_row = next(reader)  # Get the first row only
 
-            if "county_jurisdiction" in address_data:
-                county_name = str(address_data["county_jurisdiction"]).strip()
-                logger.info(f"📍 Found county_jurisdiction: {county_name}")
+            if "county" in first_row:
+                county_name = str(first_row["county"]).strip()
+                logger.info(f"📍 Found county name: {county_name}")
             else:
-                logger.error(
-                    "❌ 'county_jurisdiction' field not found in unnormalized_address.json"
-                )
+                logger.error("❌ 'county' field not found in seed.csv")
                 return None
 
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Error parsing unnormalized_address.json as JSON: {e}")
-            return None
         except Exception as e:
-            logger.error(f"❌ Error reading unnormalized_address.json: {e}")
+            logger.error(f"❌ Error reading seed.csv: {e}")
             return None
     else:
-        logger.error("❌ unnormalized_address.json not found")
+        logger.error("❌ seed.csv not found")
         return None
 
     if not county_name:
-        logger.error("❌ Could not determine county name from county_jurisdiction")
+        logger.error("❌ Could not determine county from seed.csv")
         return None
 
     # Try multiple variations of the county name
