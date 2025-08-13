@@ -11,9 +11,8 @@ from urllib.parse import urlparse, parse_qs
 
 BASE_DIR = os.path.abspath(".")
 LOCAL_DIR = os.path.dirname(__file__)
-AI_AGENT_ROOT_DIR = os.path.dirname(LOCAL_DIR)
+
 print(f"content in LOCAL_DIR: {os.listdir(LOCAL_DIR)}")
-print(f"content in AI_AGENT_ROOT_DIR: {os.listdir(AI_AGENT_ROOT_DIR)}")
 
 
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
@@ -166,7 +165,7 @@ def import_county_scripts():
     ]
 
     # Try to find the county directory
-    counties_base = os.path.join(AI_AGENT_ROOT_DIR, "counties")
+    counties_base = os.path.join(LOCAL_DIR, "counties")
 
     for variation in county_variations:
         county_path = os.path.join(counties_base, variation)
