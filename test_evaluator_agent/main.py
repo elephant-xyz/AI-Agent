@@ -541,6 +541,8 @@ async def run_simple_workflow(args=None):
         print_status("❌ Workflow failed - no output ZIP will be created")
         return False
 
+    prepare_data_for_submission("data", county_data_group_cid)
+
     # Step 5: Create output ZIP
     logger.info("Creating output ZIP file...")
     print_status("Creating output ZIP file...")
@@ -2204,13 +2206,18 @@ def fetch_county_data_group_cid():
     raise NotImplementedError("fetch_county_data_group_cid is not available in transform mode")
 
 
-def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
+def prepare_data_for_submission(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
     """
-    Run the CLI validation command and return results
+    Prepare data for submission by:
+    1. Copying data to submit directory
+    2. Updating JSON files with seed data
+    3. Building relationship files
+    4. Creating county data group files
+    
     Returns: (success: bool, error_details: str, error_hash: str)
     """
     if not county_data_group_cid:
-        error_msg = "County data group CID not provided to CLI validator"
+        error_msg = "County data group CID not provided"
         logger.error(error_msg)
         error_hash = hashlib.md5(error_msg.encode()).hexdigest()
         return False, error_msg, error_hash
@@ -2369,8 +2376,8 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
 
         logger.info(f"✅ Copied {copied_count} folders and built relationship files")
 
-        # Since we're not running the elephant CLI, we'll just return success
-        logger.info("✅ Data preparation completed successfully (CLI validation skipped)")
+        # Data preparation completed successfully
+        logger.info("✅ Data preparation completed successfully")
         return True, "", ""
 
     except Exception as e:
@@ -2378,6 +2385,22 @@ def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None)
         logger.error(error_msg)
         error_hash = hashlib.md5(error_msg.encode()).hexdigest()
         return False, error_msg, error_hash
+
+
+def run_cli_validator(data_dir: str = "data", county_data_group_cid: str = None) -> tuple[bool, str, str]:
+    """
+    Run the CLI validation by first preparing data and then validating
+    Returns: (success: bool, error_details: str, error_hash: str)
+    """
+    # First, prepare the data (generate relationships and county datagroup files)
+    success, error_details, error_hash = prepare_data_for_submission(data_dir, county_data_group_cid)
+    
+    if not success:
+        return False, error_details, error_hash
+    
+    # In transform mode, we skip actual CLI validation
+    logger.info("✅ Data preparation and file generation completed (CLI validation skipped in transform mode)")
+    return True, "", ""
 
 
 def build_relationship_files(folder_path: str) -> tuple[List[str], List[str]]:
