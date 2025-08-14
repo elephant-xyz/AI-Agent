@@ -392,7 +392,7 @@ async def run_simple_workflow():
                     logger.error(f"❌ CRITICAL: {script_name} failed - this will prevent data extraction")
 
         except Exception as e:
-            logger.error(f"❌ Error running {script_name}: {e}")
+            logger.exception(f"❌ Error running {script_name}: {e}")
             print_status(f"❌ Error running {script_name}: {str(e)}")
             script_results[script_name] = False
             if script_name == "data_extractor":
