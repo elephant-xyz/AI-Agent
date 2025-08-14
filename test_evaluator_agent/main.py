@@ -51,7 +51,7 @@ except ImportError:
 #     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 # )
 
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-5")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0"))
 
 # Define directories
