@@ -597,6 +597,8 @@ def main():
         layout_key = f'property_{parcel_id}'
         if layout_key in layout_data:
             for idx, layout in enumerate(layout_data[layout_key]['layouts'], 1):
+                # Update source_http_request to use the correct one from property_seed.json
+                layout['source_http_request'] = source_http_request
                 write_json(os.path.join(out_dir, f'layout_{idx}.json'), layout)
 
         # Lot
