@@ -1326,6 +1326,8 @@ def main():
         try:
             layouts = layout_data.get(f'property_{parcel_id}', {}).get('layouts', [])
             for i, layout in enumerate(layouts, 1):
+                # Update source_http_request to use the correct one from property_seed.json
+                layout['source_http_request'] = source_http_request
                 with open(os.path.join(out_dir, f'layout_{i}.json'), 'w', encoding='utf-8') as f:
                     json.dump(layout, f, indent=2)
         except Exception as e:
@@ -1335,8 +1337,11 @@ def main():
         try:
             structure_key = f'property_{parcel_id}'
             if structure_key in structure_data:
+                structure_obj = structure_data[structure_key]
+                # Update source_http_request to use the correct one from property_seed.json
+                structure_obj['source_http_request'] = source_http_request
                 with open(os.path.join(out_dir, 'structure.json'), 'w', encoding='utf-8') as f:
-                    json.dump(structure_data[structure_key], f, indent=2)
+                    json.dump(structure_obj, f, indent=2)
         except Exception as e:
             print(f"Error processing structure for {parcel_id}: {e}")
 
@@ -1344,8 +1349,11 @@ def main():
         try:
             utility_key = f'property_{parcel_id}'
             if utility_key in utility_data:
+                utility_obj = utility_data[utility_key]
+                # Update source_http_request to use the correct one from property_seed.json
+                utility_obj['source_http_request'] = source_http_request
                 with open(os.path.join(out_dir, 'utility.json'), 'w', encoding='utf-8') as f:
-                    json.dump(utility_data[utility_key], f, indent=2)
+                    json.dump(utility_obj, f, indent=2)
         except Exception as e:
             print(f"Error processing utility for {parcel_id}: {e}")
 
