@@ -31,7 +31,7 @@ def extract_structure_from_html(html, file_id):
         'request_identifier': str(file_id),
         'source_http_request': {
             'method': 'GET',
-            'url': f'https://www.pbcgov.org/papa/Property/Details?parcelID={file_id}'
+            'url': f'https://esearch.fbcad.org/Property/View/{file_id}'
         },
         'architectural_style_type': None,
         'attachment_type': None,
