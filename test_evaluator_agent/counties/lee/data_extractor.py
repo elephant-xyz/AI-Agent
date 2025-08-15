@@ -1172,9 +1172,6 @@ def main():
                 "property_type": property_data.get('property_type')
             }
 
-            with open(os.path.join(out_dir, 'property.json'), 'w', encoding='utf-8') as f:
-                json.dump(property_json, f, indent=2)
-
         except Exception as e:
             print(f"Error extracting property information for {parcel_id}: {e}")
             # Fallback to basic property.json
@@ -1188,9 +1185,13 @@ def main():
                 "property_structure_built_year": None,
                 "property_type": None
             }
+        
+        if property_json.get("property_type") is None:
+            raise Exception(f"property_type is not identified for {parcel_id}")
 
-            with open(os.path.join(out_dir, 'property.json'), 'w', encoding='utf-8') as f:
+        with open(os.path.join(out_dir, 'property.json'), 'w', encoding='utf-8') as f:
                 json.dump(property_json, f, indent=2)
+
         # ADDRESS.JSON
         address_json = {
             "source_http_request": source_http_request,
