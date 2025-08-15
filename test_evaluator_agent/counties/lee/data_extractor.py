@@ -1187,7 +1187,7 @@ def main():
             }
         
         if property_json.get("property_type") is None:
-            raise Exception(f"property_type is not identified for {parcel_id}")
+            raise ValueError(f"property_type is not identified for {parcel_id}")
 
         with open(os.path.join(out_dir, 'property.json'), 'w', encoding='utf-8') as f:
                 json.dump(property_json, f, indent=2)
