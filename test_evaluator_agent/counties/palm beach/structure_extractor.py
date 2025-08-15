@@ -162,7 +162,7 @@ def extract_structure_from_html(html, file_id):
     if year_built:
         possible_values = year_built.find_parent('tr').find_all('td')
         if possible_values:
-            val = [-1].get_text(strip=True)
+            val = possible_values[-1].get_text(strip=True)
             try:
                 structure['year_built'] = int(val)
             except:
