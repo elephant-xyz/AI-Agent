@@ -160,10 +160,14 @@ def extract_structure_from_html(html, file_id):
     # Year Built
     year_built = soup.find(string=re.compile(r'Year Built'))
     if year_built:
-        val = year_built.find_parent('tr').find_all('td')[-1].get_text(strip=True)
-        try:
-            structure['year_built'] = int(val)
-        except:
+        possible_values = year_built.find_parent('tr').find_all('td')
+        if possible_values:
+            val = [-1].get_text(strip=True)
+            try:
+                structure['year_built'] = int(val)
+            except:
+                structure['year_built'] = None
+        else:
             structure['year_built'] = None
     # All other fields remain None unless explicitly present in input
     return structure
