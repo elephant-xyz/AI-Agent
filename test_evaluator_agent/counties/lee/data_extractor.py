@@ -765,17 +765,17 @@ def extract_property_information_from_html(html_content):
     matched_type = None
     raw_source_value = None
 
-    def try_map_property_type(type_text, raw_value):
+    def try_map_property_type(type_text, raw_value, living_units=None):
         """Try to map a property type description to schema enum"""
         if not type_text:
             return None, None
 
         matched = None
+        type_text = type_text.lower()
 
-        # IMPORTANT: Check for "vacant" first before other classifications
+        # IMPORTANT: Check for "vacant" first
         if 'vacant' in type_text:
-            # Vacant properties should return the raw value since they're not in the schema
-            return None, raw_value
+            matched = 'VacantLand'
 
         # Direct keyword matching for all schema values
         elif any(keyword in type_text for keyword in ['single family', 'single-family']):
@@ -819,6 +819,7 @@ def extract_property_information_from_html(html_content):
             matched = 'TwoToFourFamily'
 
         return matched, raw_value
+
 
     # Try Model Type first (Priority 1)
     if model_type:
