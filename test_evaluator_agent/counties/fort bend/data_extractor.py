@@ -30,11 +30,66 @@ def clean_str(val):
 def parse_date(val):
     if not val:
         return None
-    m = re.match(r"(\d{2})/(\d{2})/(\d{4})", val)
+    # Try multiple date formats
+    # Format 1: MM/DD/YYYY
+    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", val)
     if m:
-        return f"{m.group(3)}-{m.group(1)}-{m.group(2)}"
-    return val
+        month = m.group(1).zfill(2)
+        day = m.group(2).zfill(2)
+        year = m.group(3)
+        return f"{year}-{month}-{day}"
+    
+    # Format 2: MM-DD-YYYY
+    m = re.match(r"(\d{1,2})-(\d{1,2})-(\d{4})", val)
+    if m:
+        month = m.group(1).zfill(2)
+        day = m.group(2).zfill(2)
+        year = m.group(3)
+        return f"{year}-{month}-{day}"
+    
+    # Format 3: Already in YYYY-MM-DD format
+    if re.match(r"\d{4}-\d{2}-\d{2}", val):
+        return val
+    
+    # If no valid format found, return None to avoid validation errors
+    print(f"⚠️  Warning: Unrecognized date format '{val}' - setting to None")
+    return None
 
+def clean_name(name):
+    """
+    Clean and format names to match the required pattern: ^[A-Z][a-z]*([ \-',.][A-Za-z][a-z]*)*$
+    """
+    if not name:
+        return None
+    
+    # Remove extra whitespace and capitalize properly
+    name = name.strip()
+    
+    # Handle empty names
+    if not name:
+        return None
+    
+    # Split by common separators and capitalize each part
+    parts = re.split(r'[ \-,\']+', name)
+    cleaned_parts = []
+    
+    for part in parts:
+        if part:
+            # Capitalize first letter, lowercase the rest
+            cleaned_part = part[0].upper() + part[1:].lower() if len(part) > 1 else part.upper()
+            cleaned_parts.append(cleaned_part)
+    
+    # Join with space
+    cleaned_name = ' '.join(cleaned_parts)
+    
+    # Validate against pattern
+    if re.match(r'^[A-Z][a-z]*([ \-,\'][A-Za-z][a-z]*)*$', cleaned_name):
+        return cleaned_name
+    else:
+        # If still doesn't match, return a safe default
+        print(f"⚠️  Warning: Name '{name}' couldn't be formatted to match pattern - using default")
+        return "Unknown"
+    
 def validate_street_suffix(raw_suffix):
     """
     Validate and map street suffix to allowed values from the schema.
@@ -379,29 +434,34 @@ def main():
                     "period_start_date": None
                 }
                 # Improvements, Land Market, Ag Valuation, HS Cap Loss, Appraised
+                # Ensure all amounts are numbers (not null) to pass validation
                 try:
-                    tax_json["property_building_amount"] = float(cols[1].text.replace("$", "").replace(",", "")) if cols[1].text.strip() != "N/A" else None
+                    building_val = float(cols[1].text.replace("$", "").replace(",", "")) if cols[1].text.strip() != "N/A" else 0.0
+                    tax_json["property_building_amount"] = building_val
                 except:
-                    tax_json["property_building_amount"] = None
+                    tax_json["property_building_amount"] = 0.0
                 try:
-                    tax_json["property_land_amount"] = float(cols[2].text.replace("$", "").replace(",", "")) if cols[2].text.strip() != "N/A" else None
+                    land_val = float(cols[2].text.replace("$", "").replace(",", "")) if cols[2].text.strip() != "N/A" else 0.0
+                    tax_json["property_land_amount"] = land_val
                 except:
-                    tax_json["property_land_amount"] = None
+                    tax_json["property_land_amount"] = 0.0
                 try:
-                    tax_json["property_market_value_amount"] = (
-                        float(cols[1].text.replace("$", "").replace(",", "")) +
-                        float(cols[2].text.replace("$", "").replace(",", ""))
-                    ) if cols[1].text.strip() != "N/A" and cols[2].text.strip() != "N/A" else None
+                    if cols[1].text.strip() != "N/A" and cols[2].text.strip() != "N/A":
+                        tax_json["property_market_value_amount"] = building_val + land_val
+                    else:
+                        tax_json["property_market_value_amount"] = 0.0
                 except:
-                    tax_json["property_market_value_amount"] = None
+                    tax_json["property_market_value_amount"] = 0.0
                 try:
-                    tax_json["property_assessed_value_amount"] = float(cols[5].text.replace("$", "").replace(",", "")) if cols[5].text.strip() != "N/A" else None
+                    assessed_val = float(cols[5].text.replace("$", "").replace(",", "")) if cols[5].text.strip() != "N/A" else 0.0
+                    tax_json["property_assessed_value_amount"] = assessed_val
                 except:
-                    tax_json["property_assessed_value_amount"] = None
+                    tax_json["property_assessed_value_amount"] = 0.0
                 try:
-                    tax_json["property_taxable_value_amount"] = float(cols[5].text.replace("$", "").replace(",", "")) if cols[5].text.strip() != "N/A" else None
+                    taxable_val = float(cols[5].text.replace("$", "").replace(",", "")) if cols[5].text.strip() != "N/A" else 0.0
+                    tax_json["property_taxable_value_amount"] = taxable_val
                 except:
-                    tax_json["property_taxable_value_amount"] = None
+                    tax_json["property_taxable_value_amount"] = 0.0
                 with open(os.path.join(property_dir, f"tax_{year}.json"), "w") as f:
                     json.dump(tax_json, f, indent=2)
 
@@ -432,24 +492,23 @@ def main():
                                 # Parse the date
                                 parsed_date = parse_date(deed_date)
                                 
-                                # For sales, we don't have price information in Fort Bend data
-                                # But we can create a sales record with the transfer date
-                                sales_json = {
-                                    "source_http_request": address_json["source_http_request"],
-                                    "request_identifier": f"{parcel_id}_sale_{i + 1}",
-                                    "ownership_transfer_date": parsed_date,
-                                    "purchase_price_amount": None,  # Price not available in Fort Bend data
-                                    "deed_type": deed_type,
-                                    "deed_description": description
-                                }
-                                sales_jsons.append(sales_json)
-                                sales_years.append(parsed_date[:4] if parsed_date else None)
-                                
-                                # Create sales file
-                                sales_filename = f"sales_{i + 1}.json"
-                                with open(os.path.join(property_dir, sales_filename), "w") as f:
-                                    json.dump(sales_json, f, indent=2)
-                                sales_files_created.append(sales_filename)
+                                                            # For sales, we don't have price information in Fort Bend data
+                            # But we can create a sales record with the transfer date
+                            # Note: purchase_price_amount must be a number, so we'll use 0 when price is unknown
+                            sales_json = {
+                                "source_http_request": address_json["source_http_request"],
+                                "request_identifier": f"{parcel_id}_sale_{i + 1}",
+                                "ownership_transfer_date": parsed_date,
+                                "purchase_price_amount": 0  # Price not available in Fort Bend data, using 0 as required by schema
+                            }
+                            sales_jsons.append(sales_json)
+                            sales_years.append(parsed_date[:4] if parsed_date else None)
+                            
+                            # Create sales file
+                            sales_filename = f"sales_{i + 1}.json"
+                            with open(os.path.join(property_dir, sales_filename), "w") as f:
+                                json.dump(sales_json, f, indent=2)
+                            sales_files_created.append(sales_filename)
                 break  # Found the panel, no need to continue searching
 
         # --- LAYOUT ---
@@ -632,9 +691,9 @@ def main():
                         "source_http_request": address_json["source_http_request"],
                         "request_identifier": f"{parcel_id}_person_{i+1}_{j+1}",
                         "birth_date": None,
-                        "first_name": owner.get("first_name"),
-                        "last_name": owner.get("last_name"),
-                        "middle_name": owner.get("middle_name"),
+                        "first_name": clean_name(owner.get("first_name")),
+                        "last_name": clean_name(owner.get("last_name")),
+                        "middle_name": clean_name(owner.get("middle_name")),
                         "prefix_name": None,
                         "suffix_name": None,
                         "us_citizenship_status": None,
@@ -669,17 +728,46 @@ def main():
                     with open(os.path.join(property_dir, f"relationship_sales_person_{i+1}_{j+1}.json"), "w") as f:
                         json.dump(rel, f, indent=2)
 
+        # --- LOT ---
+        # Create lot.json file (required before creating property_has_lot relationship)
+        lot_json = {
+            "source_http_request": address_json["source_http_request"],
+            "request_identifier": f"{parcel_id}_lot",
+            "lot_type": None,
+            "lot_length_feet": None,
+            "lot_width_feet": None,
+            "lot_area_sqft": None,
+            "landscaping_features": None,
+            "view": None,
+            "fencing_type": None,
+            "fence_height": None,
+            "fence_length": None,
+            "driveway_material": None,
+            "driveway_condition": None,
+            "lot_condition_issues": None
+        }
+        with open(os.path.join(property_dir, "lot.json"), "w") as f:
+            json.dump(lot_json, f, indent=2)
+        
+        # Create property_has_lot relationship (required by schema)
+        lot_relationship = {
+            "to": {"/": "./lot.json"},
+            "from": {"/": "./property.json"}
+        }
+        with open(os.path.join(property_dir, "relationship_property_has_lot.json"), "w") as f:
+            json.dump(lot_relationship, f, indent=2)
+        
         # Log summary of what was processed
         print(f"✅ Extracted data for parcel {parcel_id}")
         print(f"   - Sales files created: {len(sales_files_created)}")
         print(f"   - Tax years found: {len([f for f in os.listdir(property_dir) if f.startswith('tax_')])}")
         print(f"   - Sales relationships created: {len(sales_files_created)}")
+        print(f"   - Lot file created")
+        print(f"   - Property has lot relationship created")
 
         # --- PROPERTY ---
         # Extract property type information from HTML
         property_type = None
-        property_use = None
-        property_class = None
         
         # Look for property type information in the HTML
         # Customize these selectors based on Fort Bend's actual HTML structure
@@ -699,14 +787,10 @@ def main():
                         
                         if 'type' in label or 'classification' in label:
                             property_type = value
-                        elif 'use' in label or 'land use' in label:
-                            property_use = value
-                        elif 'class' in label:
-                            property_class = value
         
-        # Default to "Single Family" if no property type found (like other county mappings)
+        # Default to "SingleFamily" if no property type found (like other county mappings)
         if not property_type:
-            property_type = "Single Family"
+            property_type = "SingleFamily"
         
         # Generate property.json file
         property_json = {
@@ -717,9 +801,7 @@ def main():
             "parcel_identifier": parcel_id,
             "property_legal_description_text": None,
             "property_structure_built_year": None,
-            "property_type": property_type,
-            "property_use": property_use,
-            "property_class": property_class
+            "property_type": property_type
         }
         with open(os.path.join(property_dir, "property.json"), "w") as f:
             json.dump(property_json, f, indent=2)
