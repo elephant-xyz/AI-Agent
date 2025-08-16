@@ -357,6 +357,40 @@ def main():
             with open(os.path.join(property_dir, f"layout_halfbath_{i + 1}.json"), "w") as f:
                 json.dump(layout, f, indent=2)
 
+        # --- SALES ---
+        sales_tables = soup.find_all("h2", string=re.compile("Sales INFORMATION|Sales Information|Sale History|Sales", re.I))
+        sales_jsons = []
+        sales_years = []
+        sales_files_created = []  # Track which sales files were actually created
+        
+        if sales_tables:
+            sales_table = sales_tables[0].find_next("table")
+            if sales_table:
+                rows = sales_table.find_all("tr")[1:]  # Skip header row
+                for i, row in enumerate(rows):
+                    cols = row.find_all("td")
+                    if len(cols) < 5:  # Need at least 5 columns for sales data
+                        continue
+                    date = parse_date(cols[0].text.strip())
+                    price = clean_money(cols[1].text.strip())
+                    if price == 0:
+                        price = None
+                    
+                    sales_json = {
+                        "source_http_request": address_json["source_http_request"],
+                        "request_identifier": f"{parcel_id}_sale_{i + 1}",
+                        "ownership_transfer_date": date,
+                        "purchase_price_amount": price
+                    }
+                    sales_jsons.append(sales_json)
+                    sales_years.append(date[:4] if date else None)
+                    
+                    # Create sales file
+                    sales_filename = f"sales_{i + 1}.json"
+                    with open(os.path.join(property_dir, sales_filename), "w") as f:
+                        json.dump(sales_json, f, indent=2)
+                    sales_files_created.append(sales_filename)
+
         # --- OWNERS (PERSON/COMPANY) ---
         if parcel_id in owners_schema:
             owners_by_date = owners_schema[parcel_id]["owners_by_date"]
@@ -386,9 +420,15 @@ def main():
                         json.dump(person_json, f, indent=2)
 
         # --- RELATIONSHIP FILES ---
-        if parcel_id in owners_schema:
+        # FIXED: Only create sales relationships when sales files actually exist
+        if parcel_id in owners_schema and sales_files_created:  # Only proceed if sales files were created
             owners_by_date = owners_schema[parcel_id]["owners_by_date"]
             for i, (date, owners) in enumerate(owners_by_date.items()):
+                # Check if this sales file exists before creating relationships
+                sales_file = f"sales_{i + 1}.json"
+                if sales_file not in sales_files_created:
+                    continue  # Skip creating relationships for non-existent sales files
+                    
                 unique_persons = []
                 seen = set()
                 for owner in owners:
@@ -421,6 +461,11 @@ def main():
             json.dump(property_json, f, indent=2)
         # Remove null files
         remove_null_files(property_dir)
+        
+        # Log summary
+        print(f"✅ Extracted data for parcel {parcel_id}")
+        print(f"   - Sales files created: {len(sales_files_created)}")
+        print(f"   - Sales relationships created: {len(sales_files_created)}")
 
 if __name__ == "__main__":
     main()
