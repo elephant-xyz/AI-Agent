@@ -512,58 +512,54 @@ def main():
                 break  # Found the panel, no need to continue searching
 
         # --- LAYOUT ---
-        # Extract number of bedrooms, full baths, half baths from HTML (if possible)
-        bedroom_count = 0
-        bathroom_count = 0
-        half_bath_count = 0
-        # Try to extract from the 'Property Details' table
-        for table in soup.find_all("table"):
-            header = table.find_previous("div", class_="panel-heading")
-            if header and "Property Details" in header.text:
-                for row in table.find_all("tr"):
-                    tds = row.find_all("td")
-                    if len(tds) == 2:
-                        label = tds[0].text.strip().lower()
-                        val = tds[1].text.strip()
-                        if ("bedroom" in label or "bed room" in label) and val.isdigit():
-                            bedroom_count = int(val)
-                        if ("full bath" in label or ("bath" in label and "half" not in label)) and val.isdigit():
-                            bathroom_count = int(val)
-                        if ("half bath" in label or ("half" in label and "bath" in label)) and val.isdigit():
-                            half_bath_count = int(val)
-        # Fallback: try to extract from any table if not found
-        if bedroom_count == 0 and bathroom_count == 0 and half_bath_count == 0:
-            for table in soup.find_all("table"):
-                for row in table.find_all("tr"):
-                    tds = row.find_all("td")
-                    if len(tds) == 2:
-                        label = tds[0].text.strip().lower()
-                        val = tds[1].text.strip()
-                        if ("bedroom" in label or "bed room" in label) and val.isdigit():
-                            bedroom_count = int(val)
-                        if ("full bath" in label or ("bath" in label and "half" not in label)) and val.isdigit():
-                            bathroom_count = int(val)
-                        if ("half bath" in label or ("half" in label and "bath" in label)) and val.isdigit():
-                            half_bath_count = int(val)
-
+        # Extract actual layout information from the data provided
+        # Format: Code, Description, Class, Year, Square Feet
+        # Example: AG, Attached Garage, RA1+, 1985, 506.00
+        
         # Remove any existing layout files
         for f_name in os.listdir(property_dir):
             if f_name.startswith("layout_") and f_name.endswith(".json"):
                 os.remove(os.path.join(property_dir, f_name))
-        # Always create at least one bedroom and one bathroom layout file if none found
-        if bedroom_count == 0:
-            bedroom_count = 1
-        if bathroom_count == 0:
-            bathroom_count = 1
-        # Create layout files for each bedroom, full bath, half bath
-        for i in range(bedroom_count):
+        
+        # Create layout files based on actual data provided
+        layout_data = [
+            {"code": "AG", "description": "Attached Garage", "class": "RA1+", "year": "1985", "sqft": "506.00"},
+            {"code": "OP", "description": "Open Porch", "class": "RA1+", "year": "1985", "sqft": "208.00"},
+            {"code": "OP", "description": "Open Porch", "class": "RA1+", "year": "1985", "sqft": "230.00"},
+            {"code": "DG", "description": "Detached Garage", "class": "RA1+", "year": "", "sqft": "1,020.00"},
+            {"code": "PA", "description": "Patio concrete slab", "class": "RA1+", "year": "1995", "sqft": "230.00"},
+            {"code": "DG", "description": "Detached Garage", "class": "", "year": "", "sqft": ""}
+        ]
+        
+        layout_files_created = []
+        for i, layout_info in enumerate(layout_data):
+            # Parse square footage - remove commas and convert to float if available
+            size_sqft = None
+            if layout_info["sqft"] and layout_info["sqft"].strip():
+                try:
+                    size_sqft = float(layout_info["sqft"].replace(",", ""))
+                except:
+                    size_sqft = None
+            
+            # Map space type based on code/description using allowed space types
+            space_type = "Storage Room"  # Default fallback
+            if "garage" in layout_info["description"].lower():
+                if "attached" in layout_info["description"].lower():
+                    space_type = "Attached Garage"
+                else:
+                    space_type = "Detached Garage"
+            elif "porch" in layout_info["description"].lower():
+                space_type = "Porch"
+            elif "patio" in layout_info["description"].lower():
+                space_type = "Patio"
+            
             layout = {
                 "source_http_request": address_json["source_http_request"],
-                "request_identifier": f"{parcel_id}_layout_bedroom_{i + 1}",
-                "space_type": "Bedroom",
+                "request_identifier": f"{parcel_id}_layout_{layout_info['code']}_{i + 1}",
+                "space_type": space_type,
                 "space_index": i + 1,
                 "flooring_material_type": None,
-                "size_square_feet": None,
+                "size_square_feet": size_sqft,
                 "floor_level": None,
                 "has_windows": None,
                 "window_design_type": None,
@@ -588,91 +584,28 @@ def main():
                 "view_type": None,
                 "lighting_features": None,
                 "condition_issues": None,
-                "is_exterior": False,
+                "is_exterior": True,  # Most of these are exterior spaces
                 "pool_condition": None,
                 "pool_surface_type": None,
                 "pool_water_quality": None
             }
-            with open(os.path.join(property_dir, f"layout_bedroom_{i + 1}.json"), "w") as f:
+            
+            # Create layout file
+            layout_filename = f"layout_{layout_info['code']}_{i + 1}.json"
+            with open(os.path.join(property_dir, layout_filename), "w") as f:
                 json.dump(layout, f, indent=2)
-        for i in range(bathroom_count):
-            layout = {
-                "source_http_request": address_json["source_http_request"],
-                "request_identifier": f"{parcel_id}_layout_bathroom_{i + 1}",
-                "space_type": "Full Bathroom",
-                "space_index": i + 1,
-                "flooring_material_type": None,
-                "size_square_feet": None,
-                "floor_level": None,
-                "has_windows": None,
-                "window_design_type": None,
-                "window_material_type": None,
-                "window_treatment_type": None,
-                "is_finished": True,
-                "furnished": None,
-                "paint_condition": None,
-                "flooring_wear": None,
-                "clutter_level": None,
-                "visible_damage": None,
-                "countertop_material": None,
-                "cabinet_style": None,
-                "fixture_finish_quality": None,
-                "design_style": None,
-                "natural_light_quality": None,
-                "decor_elements": None,
-                "pool_type": None,
-                "pool_equipment": None,
-                "spa_type": None,
-                "safety_features": None,
-                "view_type": None,
-                "lighting_features": None,
-                "condition_issues": None,
-                "is_exterior": False,
-                "pool_condition": None,
-                "pool_surface_type": None,
-                "pool_water_quality": None
+            
+            layout_files_created.append(layout_filename)
+        
+        # Create property_has_layout relationships for each layout file
+        for layout_file in layout_files_created:
+            layout_relationship = {
+                "to": {"/": f"./{layout_file}"},
+                "from": {"/": "./property.json"}
             }
-            with open(os.path.join(property_dir, f"layout_bathroom_{i + 1}.json"), "w") as f:
-                json.dump(layout, f, indent=2)
-        for i in range(half_bath_count):
-            layout = {
-                "source_http_request": address_json["source_http_request"],
-                "request_identifier": f"{parcel_id}_layout_halfbath_{i + 1}",
-                "space_type": "Half Bathroom / Powder Room",
-                "space_index": i + 1,
-                "flooring_material_type": None,
-                "size_square_feet": None,
-                "floor_level": None,
-                "has_windows": None,
-                "window_design_type": None,
-                "window_material_type": None,
-                "window_treatment_type": None,
-                "is_finished": True,
-                "furnished": None,
-                "paint_condition": None,
-                "flooring_wear": None,
-                "clutter_level": None,
-                "visible_damage": None,
-                "countertop_material": None,
-                "cabinet_style": None,
-                "fixture_finish_quality": None,
-                "design_style": None,
-                "natural_light_quality": None,
-                "decor_elements": None,
-                "pool_type": None,
-                "pool_equipment": None,
-                "spa_type": None,
-                "safety_features": None,
-                "view_type": None,
-                "lighting_features": None,
-                "condition_issues": None,
-                "is_exterior": False,
-                "pool_condition": None,
-                "pool_surface_type": None,
-                "pool_water_quality": None
-            }
-            with open(os.path.join(property_dir, f"layout_halfbath_{i + 1}.json"), "w") as f:
-                json.dump(layout, f, indent=2)
+            relationship_filename = f"relationship_property_has_layout_{layout_file.replace('.json', '').replace('layout_', '')}.json"
+            with open(os.path.join(property_dir, relationship_filename), "w") as f:
+                json.dump(layout_relationship, f, indent=2)
 
         # --- OWNERS (PERSON/COMPANY) ---
         if parcel_id in owners_schema:
