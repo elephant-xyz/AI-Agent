@@ -851,6 +851,21 @@ def extract_property_information_from_html(html_content):
         # Return the raw value from the county website for schema filtering
         property_info['property_type'] = raw_source_value
 
+    if property_info.get("property_type") is None:
+        section_titles = soup.find_all("div", class_="sectionSubTitle")
+        for title in section_titles:
+            raw_text = title.get_text(strip=True).lower()
+            print(raw_text)
+            if "condominium" in raw_text:
+                property_info["property_type"] = "Condominium"
+                break
+            elif "townhouse" in raw_text:
+                property_info["property_type"] = "Townhouse"
+                break
+            elif "single family" in raw_text or "single-family" in raw_text:
+                property_info["property_type"] = "SingleFamily"
+                break
+
     return property_info
 
 def format_name(name):
