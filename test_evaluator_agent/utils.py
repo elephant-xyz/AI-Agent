@@ -293,7 +293,7 @@ def extract_query_params_and_base_url(url):
 
 
 def create_parcel_folder(
-    parcel_id, address, method, url, county, headers=None, multi_value_query_string=None
+    parcel_id, address, method, url, county, headers=None, multi_value_query_string=None, json_body=None
 ):
     """Create folder name based on parcel_id"""
     # Create folder name based on parcel_id
@@ -321,20 +321,15 @@ def create_parcel_folder(
 
     if headers and not is_empty_value(headers):
         unnormalized_address_data["source_http_request"]["headers"] = headers
+    if json_body and not is_empty_value(json_body):
+        unnormalized_address_data["source_http_request"]["json"] = json_body
 
     # Create property_seed.json
     property_seed_data = {
         "parcel_id": parcel_id if not is_empty_value(parcel_id) else None,
-        "source_http_request": {
-            "method": method if not is_empty_value(method) else None,
-            "url": base_url if not is_empty_value(base_url) else None,
-            "multiValueQueryString": multi_value_query,
-        },
-        "request_identifier": parcel_id if not is_empty_value(parcel_id) else None,
+        "source_http_request": unnormalized_address_data["source_http_request"].copy(),
+        "request_identifier": unnormalized_address_data["request_identifier"],
     }
-
-    if headers and not is_empty_value(headers):
-        property_seed_data["source_http_request"]["headers"] = headers
 
     # Create relationship_property_to_address.json
     relationship_data = {
@@ -416,6 +411,7 @@ def process_csv_to_seed_folders(csv_file_path):
                     multi_value_query_string_str = row.get(
                         "multiValueQueryString", ""
                     ).strip()
+                    json_body = row.get("json", "").strip() if row.get("json") else None
 
                     # Parse multiValueQueryString from CSV if provided
                     multi_value_query_string = None
@@ -451,6 +447,12 @@ def process_csv_to_seed_folders(csv_file_path):
                             logger.warning(
                                 f"Row {row_num}: Invalid headers JSON format, ignoring headers"
                             )
+                    parsed_json_body = None
+                    if json_body:
+                        try:
+                            parsed_json_body = json.loads(json_body)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Row {row_num}: Invalid json JSON format, ignoring json")
 
                     # Create parcel folder and files
                     folder_name, address_data, property_data = create_parcel_folder(
@@ -461,6 +463,7 @@ def process_csv_to_seed_folders(csv_file_path):
                         county,
                         parsed_headers,
                         multi_value_query_string,
+                        parsed_json_body,
                     )
 
                     created_folders.append(folder_name)
