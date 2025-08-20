@@ -447,6 +447,7 @@ def process_csv_to_seed_folders(csv_file_path):
                             logger.warning(
                                 f"Row {row_num}: Invalid headers JSON format, ignoring headers"
                             )
+                    parsed_json_body = None
                     if json_body:
                         try:
                             parsed_json_body = json.loads(json_body)
