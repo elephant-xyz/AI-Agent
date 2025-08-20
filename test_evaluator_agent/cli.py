@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """CLI entry point for test-evaluator-agent"""
 
-import os
 import sys
 import asyncio
 import argparse
@@ -11,9 +10,6 @@ from .setup_mcp import setup_mcp_code_executor, setup_uv_venv, check_dependencie
 
 def main():
     """Main CLI entry point"""
-    # Set Git LFS skip smudge to prevent downloading LFS files
-    os.environ['GIT_LFS_SKIP_SMUDGE'] = '1'
-    
     parser = argparse.ArgumentParser(description="Test Evaluator Agent")
     parser.add_argument("--setup", action="store_true", help="Setup UV venv and mcp_code_executor dependencies")
     parser.add_argument("--transform", action="store_true", help="Run in simple mode: download scripts → run scripts → CLI validation (no AI agents)")
