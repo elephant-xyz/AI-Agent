@@ -8,6 +8,7 @@ OUTPUT_FILE = './owners/structure_data.json'
 
 def extract_structure_from_html(html, file_id):
     soup = BeautifulSoup(html, 'html.parser')
+    
     # Required fields from schema
     def safe_enum(val, allowed):
         if val is None or val == '' or val == 'N/A':
@@ -66,9 +67,9 @@ def extract_structure_from_html(html, file_id):
         'secondary_framing_material': None,
         'structural_damage_indicators': None
     }
+    
     # Building type/attachment and architectural_style_type
     # Only extract if explicitly present in input (not inferred from use code)
-    # Try to extract attachment_type from 'Property Use Code' or similar
     use_code = soup.find(string=re.compile(r'Property Use Code'))
     if use_code:
         val = use_code.find_parent('tr').find_all('td')[-1].get_text(strip=True)
@@ -84,7 +85,9 @@ def extract_structure_from_html(html, file_id):
             structure['attachment_type'] = None
     else:
         structure['attachment_type'] = None
+    
     structure['architectural_style_type'] = None
+    
     # Exterior wall
     ext_wall = soup.find(string=re.compile(r'Exterior Wall 1'))
     if ext_wall:
@@ -98,6 +101,7 @@ def extract_structure_from_html(html, file_id):
             structure['exterior_wall_material_primary'] = 'Stucco'
         else:
             structure['exterior_wall_material_primary'] = None
+    
     # Secondary wall
     ext_wall2 = soup.find(string=re.compile(r'Exterior Wall 2'))
     if ext_wall2:
@@ -108,6 +112,7 @@ def extract_structure_from_html(html, file_id):
             structure['exterior_wall_material_secondary'] = None  # Schema only allows enum, so None
         else:
             structure['exterior_wall_material_secondary'] = None
+    
     # Roof
     roof_struct = soup.find(string=re.compile(r'Roof Structure'))
     if roof_struct:
@@ -118,6 +123,7 @@ def extract_structure_from_html(html, file_id):
             structure['roof_structure_material'] = 'Concrete Beam'
         else:
             structure['roof_structure_material'] = None
+    
     roof_cover = soup.find(string=re.compile(r'Roof Cover'))
     if roof_cover:
         val = roof_cover.find_parent('tr').find_all('td')[-1].get_text(strip=True)
@@ -138,6 +144,7 @@ def extract_structure_from_html(html, file_id):
             structure['flooring_material_primary'] = 'Ceramic Tile'
         else:
             structure['flooring_material_primary'] = None
+    
     floor2 = soup.find(string=re.compile(r'Floor Type 2'))
     if floor2:
         val = floor2.find_parent('tr').find_all('td')[-1].get_text(strip=True)
@@ -147,6 +154,7 @@ def extract_structure_from_html(html, file_id):
             structure['flooring_material_secondary'] = 'Carpet'
         else:
             structure['flooring_material_secondary'] = None
+    
     # Interior wall surface material (primary)
     int_wall1 = soup.find(string=re.compile(r'Interior Wall 1'))
     if int_wall1:
@@ -157,6 +165,7 @@ def extract_structure_from_html(html, file_id):
             structure['interior_wall_surface_material_primary'] = 'Plaster'
         else:
             structure['interior_wall_surface_material_primary'] = None
+    
     # Year Built
     year_built = soup.find(string=re.compile(r'Year Built'))
     if year_built:
@@ -165,6 +174,39 @@ def extract_structure_from_html(html, file_id):
             structure['year_built'] = int(val)
         except:
             structure['year_built'] = None
+    
+    # Extract area information from SUBAREA AND SQUARE FOOTAGE table
+    all_h3 = soup.find_all('h3')
+    area_table = None
+    for h3 in all_h3:
+        if 'SUBAREA AND SQUARE FOOTAGE' in h3.get_text(strip=True):
+            area_table = h3
+            break
+    
+    if area_table:
+        area_table = area_table.find_next('table')
+        if area_table:
+            for row in area_table.find_all('tr'):
+                cells = row.find_all('td')
+                if len(cells) >= 2:
+                    code_desc = cells[0].get_text(strip=True)
+                    sqft_text = cells[1].get_text(strip=True)
+                    
+                    try:
+                        sqft = int(sqft_text)
+                    except (ValueError, TypeError):
+                        continue
+                    
+                    # FUS - Finished Upper Story (sum all instances)
+                    if 'FUS' in code_desc and 'Finished Upper Story' in code_desc:
+                        if 'finished_upper_story_area' not in structure:
+                            structure['finished_upper_story_area'] = 0
+                        structure['finished_upper_story_area'] += sqft
+                    
+                    # BAS - Base Area
+                    elif 'BAS' in code_desc and 'Base Area' in code_desc:
+                        structure['finished_base_area'] = sqft
+    
     # All other fields remain None unless explicitly present in input
     return structure
 

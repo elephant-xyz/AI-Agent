@@ -7,7 +7,7 @@ OUTPUT_FILE = './owners/layout_data.json'
 # Allowed enums (subset)
 ALLOWED_SPACE_TYPES = {
     "Living Room","Family Room","Great Room","Dining Room","Kitchen","Breakfast Nook","Pantry",
-    "Primary Bedroom","Secondary Bedroom","Guest Bedroom","Children’s Bedroom","Nursery",
+    "Primary Bedroom","Secondary Bedroom","Guest Bedroom","Children's Bedroom","Nursery",
     "Full Bathroom","Three-Quarter Bathroom","Half Bathroom / Powder Room","En-Suite Bathroom",
     "Jack-and-Jill Bathroom","Primary Bathroom","Laundry Room","Mudroom","Closet","Bedroom",
     "Walk-in Closet","Mechanical Room","Storage Room","Server/IT Closet","Home Office","Library",
@@ -16,7 +16,7 @@ ALLOWED_SPACE_TYPES = {
     "Bar Area","Greenhouse","Attached Garage","Detached Garage","Carport","Workshop","Storage Loft",
     "Porch","Screened Porch","Sunroom","Deck","Patio","Pergola","Balcony","Terrace","Gazebo",
     "Pool House","Outdoor Kitchen","Lobby / Entry Hall","Common Room","Utility Closet","Elevator Lobby",
-    "Mail Room","Janitor’s Closet","Pool Area","Indoor Pool","Outdoor Pool","Hot Tub / Spa Area","Shed"
+    "Mail Room","Janitor's Closet","Pool Area","Indoor Pool","Outdoor Pool","Hot Tub / Spa Area","Shed"
 }
 
 BEDROOM_ENUM = 'Bedroom'
@@ -29,11 +29,14 @@ def _to_int(s):
     return int(s) if s.isdigit() else 0
 
 def _add_layout(layouts, file_id, space_type, size_sqft=None, is_exterior=False):
-    st = space_type if space_type in ALLOWED_SPACE_TYPES else None
     layouts.append({
-        'request_identifier': file_id,
-        'source_http_request': {},
-        'space_type': st,
+        'source_http_request': {
+            'method': 'GET',
+            'url': f'https://www.pbcgov.org/papa/Property/Details?parcelID={file_id}'
+        },
+        'request_identifier': str(file_id),
+        'space_type': space_type,
+        'space_index': len(layouts) + 1,
         'flooring_material_type': None,
         'size_square_feet': size_sqft,
         'floor_level': None,
@@ -41,7 +44,7 @@ def _add_layout(layouts, file_id, space_type, size_sqft=None, is_exterior=False)
         'window_design_type': None,
         'window_material_type': None,
         'window_treatment_type': None,
-        'is_finished': None,
+        'is_finished': True,
         'furnished': None,
         'paint_condition': None,
         'flooring_wear': None,
@@ -103,24 +106,35 @@ def extract_layout_from_html(html, file_id):
         for _ in range(n_half):
             _add_layout(layouts, file_id, HALF_BATH_ENUM, is_exterior=False)
 
-    # SUBAREA rows like FOP/FGR
-    for table in soup.find_all('table'):
-        header_text = ' '.join(th.get_text(' ', strip=True) for th in table.find_all('th'))
-        if re.search(r'Code Description', header_text, re.I) and re.search(r'Square\s*Foot', header_text, re.I):
-            for tr in table.find_all('tr'):
-                tds = tr.find_all(['td'])
-                if len(tds) < 2:
-                    continue
-                code_desc = tds[0].get_text(' ', strip=True)
-                sqft_text = tds[-1].get_text(' ', strip=True)
-                sqft = _to_int(sqft_text)
-                if sqft <= 0:
-                    continue
-
-                if re.search(r'\bFOP\b.*Finished\s+Open\s+Porch', code_desc, re.I):
-                    _add_layout(layouts, file_id, 'Porch', size_sqft=sqft, is_exterior=True)
-                elif re.search(r'\bFGR\b.*Finished\s+Garage', code_desc, re.I):
-                    _add_layout(layouts, file_id, 'Attached Garage', size_sqft=sqft, is_exterior=False)
+    # Extract area information from SUBAREA AND SQUARE FOOTAGE table
+    all_h3 = soup.find_all('h3')
+    area_table = None
+    for h3 in all_h3:
+        if 'SUBAREA AND SQUARE FOOTAGE' in h3.get_text(strip=True):
+            area_table = h3
+            break
+    
+    if area_table:
+        area_table = area_table.find_next('table')
+        if area_table:
+            for row in area_table.find_all('tr'):
+                cells = row.find_all('td')
+                if len(cells) >= 2:
+                    code_desc = cells[0].get_text(strip=True)
+                    sqft_text = cells[1].get_text(strip=True)
+                    
+                    try:
+                        sqft = int(sqft_text)
+                    except (ValueError, TypeError):
+                        continue
+                    
+                    # FOP - Finished Open Porch (exterior space) - each gets its own layout entry
+                    if 'FOP' in code_desc and 'Finished Open Porch' in code_desc:
+                        _add_layout(layouts, file_id, 'Porch', size_sqft=sqft, is_exterior=True)
+                    
+                    # FGR - Finished Garage
+                    elif 'FGR' in code_desc and 'Finished Garage' in code_desc:
+                        _add_layout(layouts, file_id, 'Attached Garage', size_sqft=sqft, is_exterior=False)
 
     return layouts
 
