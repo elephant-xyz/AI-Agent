@@ -632,12 +632,26 @@ def extract_property_information_from_html(html_content):
                     if area_clean and len(area_clean) >= 2:
                         property_info['livable_floor_area'] = area_clean
 
-    # Extract property legal description
-    legal_desc_section = soup.find('div', class_='textPanel')
-    if legal_desc_section:
-        legal_text = legal_desc_section.get_text(strip=True)
-        if legal_text and len(legal_text) > 5:  # Basic validation
-            property_info['property_legal_description_text'] = legal_text
+    # Extract property legal description from Property Description section
+    # Look for the Property Description section specifically
+    property_desc_section = None
+    for section in soup.find_all('div', class_='sectionSubTitle'):
+        if 'Property Description' in section.get_text():
+            property_desc_section = section
+            break
+    
+    if property_desc_section:
+        # Find the next textPanel div after the Property Description header
+        next_text_panel = property_desc_section.find_next_sibling('div', class_='textPanel')
+        if next_text_panel:
+            legal_text = next_text_panel.get_text(strip=True)
+            if legal_text and len(legal_text) > 5:  # Basic validation
+                property_info['property_legal_description_text'] = legal_text
+                print(f"Found legal description: {legal_text}")
+        else:
+            print("No textPanel found after Property Description header")
+    else:
+        print("Property Description section not found")
 
     # Extract year built from building details
     for table in soup.find_all('table', class_='appraisalAttributes'):
@@ -672,20 +686,31 @@ def extract_property_information_from_html(html_content):
     raw_model_type = None
 
     for table in soup.find_all('table', class_='appraisalAttributes'):
-        for row in table.find_all('tr'):
+        rows = table.find_all('tr')
+        for i, row in enumerate(rows):
             cells = row.find_all(['td', 'th'])
             if len(cells) >= 2:
                 header = cells[0].get_text(strip=True).lower()
-                value = cells[1].get_text(strip=True)
-
                 if 'living units' in header:
-                    try:
-                        living_units = int(value)
-                    except ValueError:
-                        pass
+                    # Look for the data row after this header row
+                    if i + 1 < len(rows):
+                        data_row = rows[i + 1]
+                        data_cells = data_row.find_all(['td', 'th'])
+                        if len(data_cells) >= 4:  # Living Units is in the 4th column
+                            try:
+                                living_units = int(data_cells[3].get_text(strip=True))
+                                print(f"Found living units: {living_units}")
+                            except (ValueError, IndexError):
+                                pass
                 elif 'model type' in header:
-                    raw_model_type = value  # Keep original
-                    model_type = value.lower()
+                    # Look for the data row after this header row
+                    if i + 1 < len(rows):
+                        data_row = rows[i + 1]
+                        data_cells = data_row.find_all(['td', 'th'])
+                        if len(data_cells) >= 2:
+                            raw_model_type = data_cells[1].get_text(strip=True)
+                            model_type = raw_model_type.lower()
+                            print(f"Found model type: {raw_model_type}")
 
     # Extract Use Code Description from Land Tracts table as fallback
     use_code_description = None
@@ -756,10 +781,6 @@ def extract_property_information_from_html(html_content):
             property_info['number_of_units_type'] = 'Three'
         elif living_units == 4:
             property_info['number_of_units_type'] = 'Four'
-        elif 1 <= living_units <= 4:
-            property_info['number_of_units_type'] = 'OneToFour'
-        elif 2 <= living_units <= 4:
-            property_info['number_of_units_type'] = 'TwoToFour'
 
     # PROPERTY TYPE EXTRACTION - Priority: Model Type first, then Use Code Description
     matched_type = None
@@ -781,10 +802,7 @@ def extract_property_information_from_html(html_content):
         elif any(keyword in type_text for keyword in ['single family', 'single-family']):
             matched = 'SingleFamily'
         elif 'duplex' in type_text or '2 unit' in type_text or 'two unit' in type_text:
-            if living_units == 2:
-                matched = 'Duplex'
-            else:
-                matched = '2Units'
+            matched = '2Units'
         elif 'triplex' in type_text or '3 unit' in type_text or 'three unit' in type_text:
             matched = '3Units'
         elif 'fourplex' in type_text or '4 unit' in type_text or 'four unit' in type_text:
@@ -834,13 +852,11 @@ def extract_property_information_from_html(html_content):
         if living_units == 1:
             matched_type = 'SingleFamily'
         elif living_units == 2:
-            matched_type = 'Duplex'
+            matched_type = '2Units'
         elif living_units == 3:
             matched_type = '3Units'
         elif living_units == 4:
             matched_type = '4Units'
-        elif 2 <= living_units <= 4:
-            matched_type = 'TwoToFourFamily'
         elif living_units > 4:
             matched_type = 'MultipleFamily'
 
@@ -1338,6 +1354,168 @@ def main():
 
         except Exception as e:
             print(f"Error processing owners for {parcel_id}: {e}")
+
+        # --- MAILING ADDRESSES ---
+        mailing_addresses = []
+        print(f"Processing mailing addresses for parcel: {parcel_id}")
+        
+        # Find the owner information section
+        soup = BeautifulSoup(html_content, 'html.parser')
+        owner_section = soup.find('div', {'id': 'divDisplayParcelOwner'})
+        if owner_section:
+            print(f"Found owner section for {parcel_id}")
+            # Find the text panel with mailing address
+            text_panel = owner_section.find('div', class_='textPanel')
+            if text_panel:
+                # Extract the mailing address text
+                address_text = text_panel.get_text(strip=True)
+                print(f"Found address text: {address_text}")
+                
+                # Parse the address into components
+                addr_parts = parse_address(address_text)
+                
+                # Create mailing address JSON
+                mailing_address_json = {
+                    "source_http_request": source_http_request,
+                    "request_identifier": request_identifier,
+                    "street_number": addr_parts.get('street_number'),
+                    "street_name": addr_parts.get('street_name'),
+                    "unit_identifier": addr_parts.get('unit_identifier'),
+                    "plus_four_postal_code": addr_parts.get('plus_four_postal_code'),
+                    "street_post_directional_text": addr_parts.get('street_post_directional_text'),
+                    "street_pre_directional_text": addr_parts.get('street_pre_directional_text'),
+                    "street_suffix_type": addr_parts.get('street_suffix_type'),
+                    "city_name": addr_parts.get('city_name'),
+                    "country_code": addr_parts.get('country_code'),
+                    "county_name": address_data.get("county_jurisdiction"),
+                    "route_number": addr_parts.get('route_number')
+                }
+                
+                # Save mailing address
+                with open(os.path.join(out_dir, 'mailing_address_1.json'), 'w', encoding='utf-8') as f:
+                    json.dump(mailing_address_json, f, indent=2)
+                
+                # Extract owner names from the address text
+                # The format is typically: "OWNER1 & OWNER2\nADDRESS\nCITY STATE ZIP"
+                # For Lee County, the text might be concatenated without proper newlines
+                # Try to split by common patterns
+                owner_names = []
+                
+                # First, try to extract the address part (everything after the names)
+                # Look for patterns like "1418 SE 12TH TER" or "CAPE CORAL FL 33990"
+                address_pattern = r'(\d+\s+[A-Z\s]+)'
+                city_state_zip_pattern = r'([A-Z\s]+)\s+([A-Z]{2})\s+(\d{5})'
+                
+                address_match = re.search(address_pattern, address_text)
+                city_state_zip_match = re.search(city_state_zip_pattern, address_text)
+                
+                if address_match and city_state_zip_match:
+                    # Extract the address and city/state/zip
+                    street_address = address_match.group(1).strip()
+                    city = city_state_zip_match.group(1).strip()
+                    state = city_state_zip_match.group(2)
+                    zip_code = city_state_zip_match.group(3)
+                    
+                    # The owner names should be everything before the street address
+                    owner_part = address_text[:address_match.start()].strip()
+                    
+                    # Split owner names by common separators
+                    if '&' in owner_part:
+                        owner_parts = owner_part.split('&')
+                        for part in owner_parts:
+                            name = part.strip()
+                            if name:
+                                # Clean HTML entities and extra characters
+                                name = name.replace("&amp;", "&").replace("&", "&").strip()
+                                # Remove trailing punctuation like "&" if it's not part of the name
+                                if name.endswith(" &") and len(name) > 2:
+                                    name = name[:-2].strip()
+                                owner_names.append(name)
+                    else:
+                        # Single owner
+                        owner_names.append(owner_part)
+                    
+                    print(f"Extracted owner names: {owner_names}")
+                    print(f"Extracted address: {street_address}, {city}, {state} {zip_code}")
+                    
+                    # Create person_has_mailing_address relationships for each owner
+                    # Only create relationships for persons who actually have this mailing address
+                    for owner_name in owner_names:
+                        print(f"Processing owner: '{owner_name}'")
+                        property_key = f"property_{parcel_id}"
+                        if property_key in owners_schema:
+                            owners_by_date = owners_schema[property_key]["owners_by_date"]
+                            print(f"Found owners schema with {len(owners_by_date)} sale periods")
+                            for i, (date, owners) in enumerate(owners_by_date.items()):
+                                person_count = 0
+                                seen_persons = set()
+                                for j, owner in enumerate(owners):
+                                    if owner["type"] == "person":
+                                        person_key = (owner.get("first_name"), owner.get("last_name"), owner.get("middle_name"))
+                                        if person_key in seen_persons:
+                                            continue
+                                        seen_persons.add(person_key)
+                                        person_count += 1
+                                        
+                                        # Check if this person matches the owner name from the mailing address
+                                        full_name = f"{owner.get('first_name', '')} {owner.get('last_name', '')}".strip()
+                                        print(f"Comparing: HTML owner '{owner_name}' vs schema person '{full_name}'")
+                                        
+                                        # Improved name matching logic
+                                        def names_match(html_name, schema_name):
+                                            # Normalize both names for comparison
+                                            html_normalized = html_name.upper().strip()
+                                            schema_normalized = schema_name.upper().strip()
+                                            
+                                            # Direct match
+                                            if html_normalized == schema_normalized:
+                                                return True
+                                            
+                                            # Check if names are subsets of each other
+                                            html_parts = set(html_normalized.split())
+                                            schema_parts = set(schema_normalized.split())
+                                            
+                                            # If one name is a subset of the other, consider it a match
+                                            if html_parts.issubset(schema_parts) or schema_parts.issubset(html_parts):
+                                                return True
+                                            
+                                            # Check for partial matches (e.g., "SAFAVI SOOFI" vs "Soofi Safavi")
+                                            if len(html_parts) >= 2 and len(schema_parts) >= 2:
+                                                # Check if at least 2 parts match
+                                                common_parts = html_parts.intersection(schema_parts)
+                                                if len(common_parts) >= 2:
+                                                    return True
+                                            
+                                            return False
+                                        
+                                        if names_match(owner_name, full_name):
+                                            print(f"MATCH FOUND! Creating relationship for {full_name}")
+                                            # Create person_has_mailing_address relationship
+                                            relationship_json = {
+                                                "source_http_request": source_http_request,
+                                                "request_identifier": request_identifier,
+                                                "person_id": f"person_{i}_{j}_{person_count}",
+                                                "mailing_address_id": "mailing_address_1"
+                                            }
+                                            
+                                            with open(os.path.join(out_dir, f'relationship_person_has_mailing_address_{i}_{j}_{person_count}.json'), 'w', encoding='utf-8') as f:
+                                                json.dump(relationship_json, f, indent=2)
+                                            print(f"Created relationship: relationship_person_has_mailing_address_{i}_{j}_{person_count}.json")
+                                        else:
+                                            print(f"No match for {full_name}")
+                                else:
+                                    continue
+                                break
+                        else:
+                            print(f"No owners schema found for {parcel_id}")
+                else:
+                    print(f"Could not parse address format: {address_text}")
+                    print(f"Address match: {address_match}")
+                    print(f"City/State/Zip match: {city_state_zip_match}")
+            else:
+                print(f"No text panel found for {parcel_id}")
+        else:
+            print(f"No owner section found for {parcel_id}")
 
         # LAYOUTS
         try:

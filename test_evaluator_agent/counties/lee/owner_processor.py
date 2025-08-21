@@ -173,6 +173,55 @@ def extract_owners_from_html_file(filepath):
                         if not any(line == o['name'] for o in raw_owners):
                             raw_owners.append({'type': 'current', 'name': line})
 
+        # Method 4: Lee County specific - Look for divDisplayParcelOwner section
+        owner_section = soup.find('div', {'id': 'divDisplayParcelOwner'})
+        if owner_section:
+            # Find the text panel with owner information
+            text_panel = owner_section.find('div', class_='textPanel')
+            if text_panel:
+                # Extract the full text
+                owner_text = text_panel.get_text(strip=True)
+                print(f"Found owner text in Lee County format: {owner_text}")
+                
+                # Parse the owner names from the text
+                # The format is typically: "OWNER1 & OWNER2\nADDRESS\nCITY STATE ZIP"
+                # For Lee County, the text might be concatenated without proper newlines
+                # Try to extract the address part (everything after the names)
+                # Look for patterns like "1418 SE 12TH TER" or "CAPE CORAL FL 33990"
+                address_pattern = r'(\d+\s+[A-Z\s]+)'
+                
+                address_match = re.search(address_pattern, owner_text)
+                
+                if address_match:
+                    # The owner names should be everything before the street address
+                    owner_part = owner_text[:address_match.start()].strip()
+                    
+                    # Split owner names by common separators
+                    if '&' in owner_part:
+                        owner_parts = owner_part.split('&')
+                        for part in owner_parts:
+                            name = part.strip()
+                            if name:
+                                # Clean HTML entities and extra characters
+                                name = name.replace("&amp;", "&").replace("&", "&").strip()
+                                # Remove trailing punctuation like "&" if it's not part of the name
+                                if name.endswith(" &") and len(name) > 2:
+                                    name = name[:-2].strip()
+                                if name and not any(name == o['name'] for o in raw_owners):
+                                    raw_owners.append({'type': 'current', 'name': name})
+                                    print(f"Found Lee County owner: {name}")
+                    else:
+                        # Single owner
+                        if owner_part and not any(owner_part == o['name'] for o in raw_owners):
+                            raw_owners.append({'type': 'current', 'name': owner_part})
+                            print(f"Found Lee County owner: {owner_part}")
+                else:
+                    print(f"Could not parse Lee County owner format: {owner_text}")
+            else:
+                print("No textPanel found in Lee County divDisplayParcelOwner")
+        else:
+            print("No divDisplayParcelOwner found in Lee County HTML")
+
         # Try to extract sale date for owners_by_date
         sale_date = None
         sale_pattern = r'Sale Date.*?(\d{1,2}/\d{1,2}/\d{4})'

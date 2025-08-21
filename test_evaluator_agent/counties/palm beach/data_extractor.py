@@ -3,6 +3,42 @@ import re
 import json
 import csv
 from bs4 import BeautifulSoup
+# Inline utility functions to avoid import issues
+def find_area_table(soup):
+    """
+    Find the 'SUBAREA AND SQUARE FOOTAGE' table in the HTML.
+    
+    Args:
+        soup: BeautifulSoup object of the HTML content
+        
+    Returns:
+        The area table element if found, None otherwise
+    """
+    all_h3 = soup.find_all('h3')
+    area_table = None
+    for h3 in all_h3:
+        if 'SUBAREA AND SQUARE FOOTAGE' in h3.get_text(strip=True):
+            area_table = h3
+            break
+    
+    if area_table:
+        area_table = area_table.find_next('table')
+        return area_table
+    
+    return None
+
+
+def find_structural_elements_tables(soup):
+    """
+    Find all 'structural_elements' tables in the HTML.
+    
+    Args:
+        soup: BeautifulSoup object of the HTML content
+        
+    Returns:
+        List of structural_elements table elements
+    """
+    return soup.find_all("table", class_="structural_elements")
 
 
 def clean_money(val):
@@ -73,6 +109,43 @@ def load_unnormalized_address_json():
         print("Warning: unnormalized_address.json not found")
         return {}
 
+
+def names_match(html_name, schema_name):
+    """
+    Check if two names match, accounting for order differences and variations.
+    
+    Args:
+        html_name: Name extracted from HTML
+        schema_name: Name from schema
+        
+    Returns:
+        True if names match, False otherwise
+    """
+    # Normalize both names for comparison
+    html_normalized = html_name.upper().strip()
+    schema_normalized = schema_name.upper().strip()
+    
+    # Direct match
+    if html_normalized == schema_normalized:
+        return True
+    
+    # Split names and check for order differences
+    html_parts = html_normalized.split()
+    schema_parts = schema_normalized.split()
+    
+    if len(html_parts) == 2 and len(schema_parts) == 2:
+        # Check if names are in different order
+        if (html_parts[0] == schema_parts[1] and 
+            html_parts[1] == schema_parts[0]):
+            return True
+        
+        # Check if one is a subset of the other
+        if (html_parts[0] in schema_parts and 
+            html_parts[1] in schema_parts):
+            return True
+    
+    return False
+
 def main():
     # Load owner and structure data
     with open("./owners/owners_schema.json") as f:
@@ -113,11 +186,15 @@ def main():
             "source_http_request": source_http_request,
             "request_identifier": request_identifier,
             "livable_floor_area": None,
+            "area_under_air": None,
+            "total_area": None,
             "number_of_units_type": None,
             "parcel_identifier": None,
             "property_legal_description_text": None,
             "property_structure_built_year": None,
-            "property_type": None
+            "property_type": None,
+            "subdivision": None,
+            "zoning": None
         }
         pcn = soup.find(id="MainContent_lblPCN")
         if pcn:
@@ -125,12 +202,56 @@ def main():
         legal = soup.find(id="MainContent_lblLegalDesc")
         if legal:
             property_json["property_legal_description_text"] = clean_str(legal.text)
+        
+        # Extract subdivision
+        subdiv = soup.find(id="MainContent_lblSubdiv")
+        if subdiv:
+            # Clean up the subdivision text by removing extra whitespace and normalizing
+            cleaned_subdiv = " ".join(subdiv.text.split())  # This removes extra whitespace and newlines
+            property_json["subdivision"] = cleaned_subdiv
+        
+        # Extract zoning from structural_elements table
+        struct_tables = find_structural_elements_tables(soup)
+        for struct_table in struct_tables:
+            rows = struct_table.find_all("tr")
+            for row in rows:
+                tds = row.find_all("td")
+                if len(tds) == 2:
+                    label = tds[0].text.strip().lower()
+                    val = tds[1].text.strip()
+                    if "zoning" in label:
+                        # Clean up the zoning text by removing extra whitespace and normalizing
+                        cleaned_zoning = " ".join(val.split())  # This removes extra whitespace and newlines
+                        property_json["zoning"] = cleaned_zoning
+                        break
+        
         if addr_key in structure_data and structure_data[addr_key].get("year_built"):
             property_json["property_structure_built_year"] = structure_data[addr_key]["year_built"]
         # Extract number_of_units_type and lot_area_sqft from structural details
         number_of_units = None
-        lot_area_sqft = None
-        struct_tables = soup.find_all("table", class_="structural_elements")
+        total_square_feet = None
+        area_under_air = None
+        livable_area = None
+        
+        # First check SUBAREA AND SQUARE FOOTAGE table for Area Under Air
+        area_table = find_area_table(soup)
+        if area_table:
+                for row in area_table.find_all('tr'):
+                    cells = row.find_all('td')
+                    if len(cells) >= 2:
+                        code_desc = cells[0].get_text(strip=True)
+                        sqft_text = cells[1].get_text(strip=True)
+                        
+                        try:
+                            sqft = int(sqft_text)
+                        except (ValueError, TypeError):
+                            continue
+                        
+                        if 'Area Under Air' in code_desc:
+                            area_under_air = sqft
+        
+        # Then check structural_elements table for other values
+        struct_tables = find_structural_elements_tables(soup)
         for struct_table in struct_tables:
             rows = struct_table.find_all("tr")
             for row in rows:
@@ -140,8 +261,13 @@ def main():
                     val = tds[1].text.strip()
                     if ("number of units" in label or "units" in label) and val.isdigit():
                         number_of_units = int(val)
-                    if ("total square feet" in label or "area" == label) and val.isdigit():
-                        lot_area_sqft = int(val)
+                    if "total square feet" in label and val.isdigit():
+                        total_square_feet = int(val)
+                    if "area under air" in label and val.isdigit():
+                        area_under_air = int(val)
+                    if "area" == label and val.isdigit():
+                        livable_area = int(val)
+        
         # Set number_of_units_type
         if number_of_units == 1:
             property_json["number_of_units_type"] = "One"
@@ -151,11 +277,28 @@ def main():
             property_json["number_of_units_type"] = "Three"
         elif number_of_units == 4:
             property_json["number_of_units_type"] = "Four"
-        elif number_of_units and 2 <= number_of_units <= 4:
-            property_json["number_of_units_type"] = "TwoToFour"
-        # Set lot_area_sqft as string for property (schema allows string or null)
-        if lot_area_sqft:
-            property_json["livable_floor_area"] = str(lot_area_sqft)
+        
+        # Set livable_floor_area - prioritize area under air, then total square feet, then livable area
+        if area_under_air:
+            property_json["livable_floor_area"] = str(area_under_air)
+        elif total_square_feet:
+            property_json["livable_floor_area"] = str(total_square_feet)
+        elif livable_area:
+            property_json["livable_floor_area"] = str(livable_area)
+        
+        # Set area_under_air only if it has a value
+        if area_under_air:
+            property_json["area_under_air"] = str(area_under_air)
+        else:
+            # Remove the field entirely if no value
+            property_json.pop("area_under_air", None)
+        
+        # Set total_area only if it has a value
+        if total_square_feet:
+            property_json["total_area"] = str(total_square_feet)
+        else:
+            # Remove the field entirely if no value
+            property_json.pop("total_area", None)
         # Set property_type
         property_type_set = False
         # Try to extract from Subdivision
@@ -172,7 +315,7 @@ def main():
                 property_json["property_type"] = "SingleFamily"
                 property_type_set = True
             elif "duplex" in val:
-                property_json["property_type"] = "Duplex"
+                property_json["property_type"] = "2Units"
                 property_type_set = True
             elif "cooperative" in val:
                 property_json["property_type"] = "Cooperative"
@@ -180,7 +323,7 @@ def main():
         # If not set, try to extract from Property Use Code
         if not property_type_set:
             # Find "Property Use Code" in structural_elements tables
-            for struct_table in soup.find_all("table", class_="structural_elements"):
+            for struct_table in find_structural_elements_tables(soup):
                 rows = struct_table.find_all("tr")
                 for row in rows:
                     tds = row.find_all("td")
@@ -196,7 +339,7 @@ def main():
                             elif "single family" in val:
                                 property_json["property_type"] = "SingleFamily"
                             elif "duplex" in val:
-                                property_json["property_type"] = "Duplex"
+                                property_json["property_type"] = "2Units"
                             elif "cooperative" in val:
                                 property_json["property_type"] = "Cooperative"
                             elif "0400" in val:
@@ -204,9 +347,9 @@ def main():
                             elif "0100" in val:
                                 property_json["property_type"] = "SingleFamily"
                             elif "0200" in val:
-                                property_json["property_type"] = "Duplex"
+                                property_json["property_type"] = "2Units"
                             elif "0300" in val:
-                                property_json["property_type"] = "Triplex"
+                                property_json["property_type"] = "3Units"
                             elif "0500" in val:
                                 property_json["property_type"] = "Townhouse"
                             else:
@@ -215,6 +358,13 @@ def main():
                             break
                 if property_type_set:
                     break
+        
+        # Remove subdivision and zoning fields if they're missing/null
+        if not property_json.get("subdivision"):
+            property_json.pop("subdivision", None)
+        if not property_json.get("zoning"):
+            property_json.pop("zoning", None)
+        
         with open(os.path.join(property_dir, "property.json"), "w") as f:
             json.dump(property_json, f, indent=2)
 
@@ -401,6 +551,147 @@ def main():
                         with open(os.path.join(property_dir, f"company_{i + 1}_{company_count}.json"), "w") as f:
                             json.dump(company_json, f, indent=2)
 
+                # --- MAILING ADDRESSES ---
+        # Find the owner information section
+        owner_sections = soup.find_all("h2", string=re.compile("Owner INFORMATION", re.I))
+        if owner_sections:
+            owner_section = owner_sections[0]
+            # Find the table with mailing addresses
+            mailing_table = owner_section.find_next("table")
+            if mailing_table:
+                rows = mailing_table.find_all("tr")[1:]  # Skip header row
+                if rows:
+                    # Extract mailing address from first row (assuming all owners share the same mailing address)
+                    first_row = rows[0]
+                    cols = first_row.find_all("td")
+                    if len(cols) >= 3:
+                        # Extract mailing address from third column
+                        mailing_address_cell = cols[2]
+                        if mailing_address_cell:
+                            # Get all text content and clean it up
+                            mailing_text = " ".join(mailing_address_cell.get_text().split())
+                            if mailing_text and mailing_text.strip():
+                                # Create single mailing address JSON (like Lee County)
+                                mailing_address_json = {
+                                    "source_http_request": source_http_request,
+                                    "request_identifier": f"{request_identifier}_mailing_address_1",
+                                    "city_name": None,
+                                    "country_code": "US",
+                                    "county_name": "PALM BEACH",
+                                    "latitude": None,
+                                    "longitude": None,
+                                    "plus_four_postal_code": None,
+                                    "postal_code": None,
+                                    "state_code": None,
+                                    "street_name": None,
+                                    "street_post_directional_text": None,
+                                    "street_pre_directional_text": None,
+                                    "street_number": None,
+                                    "street_suffix_type": None,
+                                    "unit_identifier": None,
+                                    "route_number": None,
+                                    "township": None,
+                                    "range": None,
+                                    "section": None,
+                                    "block": None
+                                }
+                                
+                                # Parse the mailing address
+                                addr_parts = mailing_text.split(',')
+                                if len(addr_parts) >= 1:
+                                    # Parse street address
+                                    street_addr = addr_parts[0].strip()
+                                    street_parts = street_addr.split()
+                                    if street_parts and street_parts[0].isdigit():
+                                        mailing_address_json["street_number"] = street_parts[0]
+                                        # Extract street name (everything after street number)
+                                        street_name_parts = street_parts[1:]
+                                        if street_name_parts:
+                                            # Handle street suffix
+                                            suffix_map = {
+                                                "AVE": "Ave", "ST": "St", "DR": "Dr", "LN": "Ln", "RD": "Rd", "CT": "Ct",
+                                                "PL": "Pl", "WAY": "Way", "CIR": "Cir", "PKWY": "Pkwy", "BLVD": "Blvd"
+                                            }
+                                            last_part = street_name_parts[-1].upper()
+                                            if last_part in suffix_map:
+                                                mailing_address_json["street_suffix_type"] = suffix_map[last_part]
+                                                street_name_parts = street_name_parts[:-1]
+                                            
+                                            mailing_address_json["street_name"] = " ".join(street_name_parts)
+                                
+                                # Parse city, state, zip
+                                if len(addr_parts) >= 2:
+                                    city_state_zip = addr_parts[1].strip()
+                                    parts = city_state_zip.split()
+                                    if len(parts) >= 2:
+                                        # Last part is usually the zip code
+                                        zip_part = parts[-1]
+                                        if zip_part.isdigit() and len(zip_part) >= 5:
+                                            mailing_address_json["postal_code"] = zip_part[:5]
+                                            if len(zip_part) > 5:
+                                                mailing_address_json["plus_four_postal_code"] = zip_part[5:9]
+                                        
+                                        # Second to last part is usually the state
+                                        if len(parts) >= 2:
+                                            state_part = parts[-2]
+                                            if len(state_part) == 2:
+                                                mailing_address_json["state_code"] = state_part.upper()
+                                        
+                                        # Everything before state/zip is the city
+                                        city_parts = parts[:-2] if len(parts) >= 2 else parts[:-1]
+                                        if city_parts:
+                                            mailing_address_json["city_name"] = " ".join(city_parts).upper()
+                                
+                                # Save single mailing address JSON
+                                with open(os.path.join(property_dir, "mailing_address_1.json"), "w") as f:
+                                    json.dump(mailing_address_json, f, indent=2)
+                                
+                                # Extract owner names from all rows and create relationships
+                                for row_idx, row in enumerate(rows):
+                                    cols = row.find_all("td")
+                                    if len(cols) >= 3:
+                                        # Extract owner names from first column
+                                        owner_spans = cols[0].find_all("span")
+                                        owner_names = []
+                                        for span in owner_spans:
+                                            name = span.text.strip()
+                                            if name:
+                                                # Clean HTML entities and extra characters
+                                                name = name.replace("&amp;", "&").strip()
+                                                # Remove trailing punctuation like "&" if it's not part of the name
+                                                if name.endswith(" &") and len(name) > 2:
+                                                    name = name[:-2].strip()
+                                                owner_names.append(name)
+                                        
+                                        # Create person_has_mailing_address relationships for each owner
+                                        for owner_name in owner_names:
+                                            if parcel_id in owners_schema:
+                                                owners_by_date = owners_schema[parcel_id]["owners_by_date"]
+                                                for i, (date, owners) in enumerate(owners_by_date.items()):
+                                                    person_count = 0
+                                                    seen_persons = set()
+                                                    for j, owner in enumerate(owners):
+                                                        if owner["type"] == "person":
+                                                            person_key = (owner.get("first_name"), owner.get("last_name"), owner.get("middle_name"))
+                                                            if person_key in seen_persons:
+                                                                continue
+                                                            seen_persons.add(person_key)
+                                                            person_count += 1
+                                                            
+                                                            # Check if this person matches the owner name from the mailing address
+                                                            full_name = f"{owner.get('first_name', '')} {owner.get('last_name', '')}".strip()
+                                                            
+                                                            if names_match(owner_name, full_name):
+                                                                # Create relationship to the single mailing address
+                                                                rel = {
+                                                                    "to": {"/": "./mailing_address_1.json"},
+                                                                    "from": {"/": f"./person_{i + 1}_{person_count}.json"}
+                                                                }
+                                                                rel_filename = f"relationship_person_has_mailing_address_{i + 1}_{person_count}_1.json"
+                                                                with open(os.path.join(property_dir, rel_filename), "w") as f:
+                                                                    json.dump(rel, f, indent=2)
+                                                                break
+
         # --- RELATIONSHIP FILES ---
         if parcel_id in owners_schema:
             owners_by_date = owners_schema[parcel_id]["owners_by_date"]
@@ -479,7 +770,7 @@ def main():
         bedroom_count = 0
         bathroom_count = 0
         half_bath_count = 0
-        struct_tables = soup.find_all("table", class_="structural_elements")
+        struct_tables = find_structural_elements_tables(soup)
         for struct_table in struct_tables:
             rows = struct_table.find_all("tr")
             for row in rows:
@@ -497,128 +788,69 @@ def main():
         for f in os.listdir(property_dir):
             if f.startswith("layout_") and f.endswith(".json"):
                 os.remove(os.path.join(property_dir, f))
-        # Create layout files for each bedroom, full bath, half bath
-        for i in range(bedroom_count):
-            layout = {
+        
+        # Create layout files from layout_data.json
+        property_layouts = layout_data.get(addr_key, {}).get('layouts', [])
+        layout_counts = {}
+        
+        for layout in property_layouts:
+            space_type = layout.get('space_type', 'Unknown')
+            space_index = layout.get('space_index', 1)
+            
+            # Create safe filename from space_type
+            safe_space_type = space_type.lower().replace(' ', '').replace('/', '').replace('-', '')
+            
+            # Count instances of each space type for unique filenames
+            if space_type not in layout_counts:
+                layout_counts[space_type] = 0
+            layout_counts[space_type] += 1
+            
+            filename = f"layout_{safe_space_type}_{layout_counts[space_type]}.json"
+            
+            # Create the layout file with all the data from layout_data.json
+            layout_file_data = {
                 "source_http_request": source_http_request,
-                "request_identifier": f"{request_identifier}_layout_bedroom_{i + 1}",
-                "space_type": "Bedroom",
-                "space_index": i + 1,
-                "flooring_material_type": None,
-                "size_square_feet": None,
-                "floor_level": None,
-                "has_windows": None,
-                "window_design_type": None,
-                "window_material_type": None,
-                "window_treatment_type": None,
-                "is_finished": True,
-                "furnished": None,
-                "paint_condition": None,
-                "flooring_wear": None,
-                "clutter_level": None,
-                "visible_damage": None,
-                "countertop_material": None,
-                "cabinet_style": None,
-                "fixture_finish_quality": None,
-                "design_style": None,
-                "natural_light_quality": None,
-                "decor_elements": None,
-                "pool_type": None,
-                "pool_equipment": None,
-                "spa_type": None,
-                "safety_features": None,
-                "view_type": None,
-                "lighting_features": None,
-                "condition_issues": None,
-                "is_exterior": False,
-                "pool_condition": None,
-                "pool_surface_type": None,
-                "pool_water_quality": None
+                "request_identifier": f"{request_identifier}_layout_{safe_space_type}_{layout_counts[space_type]}",
+                "space_type": layout.get('space_type'),
+                "space_index": layout.get('space_index'),
+                "flooring_material_type": layout.get('flooring_material_type'),
+                "size_square_feet": layout.get('size_square_feet'),
+                "floor_level": layout.get('floor_level'),
+                "has_windows": layout.get('has_windows'),
+                "window_design_type": layout.get('window_design_type'),
+                "window_material_type": layout.get('window_material_type'),
+                "window_treatment_type": layout.get('window_treatment_type'),
+                "is_finished": layout.get('is_finished'),
+                "furnished": layout.get('furnished'),
+                "paint_condition": layout.get('paint_condition'),
+                "flooring_wear": layout.get('flooring_wear'),
+                "clutter_level": layout.get('clutter_level'),
+                "visible_damage": layout.get('visible_damage'),
+                "countertop_material": layout.get('countertop_material'),
+                "cabinet_style": layout.get('cabinet_style'),
+                "fixture_finish_quality": layout.get('fixture_finish_quality'),
+                "design_style": layout.get('design_style'),
+                "natural_light_quality": layout.get('natural_light_quality'),
+                "decor_elements": layout.get('decor_elements'),
+                "pool_type": layout.get('pool_type'),
+                "pool_equipment": layout.get('pool_equipment'),
+                "spa_type": layout.get('spa_type'),
+                "safety_features": layout.get('safety_features'),
+                "view_type": layout.get('view_type'),
+                "lighting_features": layout.get('lighting_features'),
+                "condition_issues": layout.get('condition_issues'),
+                "is_exterior": layout.get('is_exterior'),
+                "pool_condition": layout.get('pool_condition'),
+                "pool_surface_type": layout.get('pool_surface_type'),
+                "pool_water_quality": layout.get('pool_water_quality')
             }
-            with open(os.path.join(property_dir, f"layout_bedroom_{i + 1}.json"), "w") as f:
-                json.dump(layout, f, indent=2)
-        for i in range(bathroom_count):
-            layout = {
-                "source_http_request": source_http_request,
-                "request_identifier": f"{request_identifier}_layout_bathroom_{i + 1}",
-                "space_type": "Full Bathroom",
-                "space_index": i + 1,
-                "flooring_material_type": None,
-                "size_square_feet": None,
-                "floor_level": None,
-                "has_windows": None,
-                "window_design_type": None,
-                "window_material_type": None,
-                "window_treatment_type": None,
-                "is_finished": True,
-                "furnished": None,
-                "paint_condition": None,
-                "flooring_wear": None,
-                "clutter_level": None,
-                "visible_damage": None,
-                "countertop_material": None,
-                "cabinet_style": None,
-                "fixture_finish_quality": None,
-                "design_style": None,
-                "natural_light_quality": None,
-                "decor_elements": None,
-                "pool_type": None,
-                "pool_equipment": None,
-                "spa_type": None,
-                "safety_features": None,
-                "view_type": None,
-                "lighting_features": None,
-                "condition_issues": None,
-                "is_exterior": False,
-                "pool_condition": None,
-                "pool_surface_type": None,
-                "pool_water_quality": None
-            }
-            with open(os.path.join(property_dir, f"layout_bathroom_{i + 1}.json"), "w") as f:
-                json.dump(layout, f, indent=2)
-        for i in range(half_bath_count):
-            layout = {
-                "source_http_request": source_http_request,
-                "request_identifier": f"{request_identifier}_layout_halfbath_{i + 1}",
-                "space_type": "Half Bathroom / Powder Room",
-                "space_index": i + 1,
-                "flooring_material_type": None,
-                "size_square_feet": None,
-                "floor_level": None,
-                "has_windows": None,
-                "window_design_type": None,
-                "window_material_type": None,
-                "window_treatment_type": None,
-                "is_finished": True,
-                "furnished": None,
-                "paint_condition": None,
-                "flooring_wear": None,
-                "clutter_level": None,
-                "visible_damage": None,
-                "countertop_material": None,
-                "cabinet_style": None,
-                "fixture_finish_quality": None,
-                "design_style": None,
-                "natural_light_quality": None,
-                "decor_elements": None,
-                "pool_type": None,
-                "pool_equipment": None,
-                "spa_type": None,
-                "safety_features": None,
-                "view_type": None,
-                "lighting_features": None,
-                "condition_issues": None,
-                "is_exterior": False,
-                "pool_condition": None,
-                "pool_surface_type": None,
-                "pool_water_quality": None
-            }
-            with open(os.path.join(property_dir, f"layout_halfbath_{i + 1}.json"), "w") as f:
-                json.dump(layout, f, indent=2)
-        # Ensure total layout files = bedrooms + full baths + half baths
+            
+            with open(os.path.join(property_dir, filename), "w") as f:
+                json.dump(layout_file_data, f, indent=2)
+        
+        # Verify layout files were created
         layout_files = [f for f in os.listdir(property_dir) if f.startswith("layout_") and f.endswith(".json")]
-        assert len(
-            layout_files) == bedroom_count + bathroom_count + half_bath_count, f"Layout file count mismatch for {parcel_id}"
+        print(f"Created {len(layout_files)} layout files for {parcel_id}: {', '.join(layout_files)}")
 
         # --- LOT ---
         lot_json = None
@@ -630,6 +862,8 @@ def main():
         lot_json = {k: None for k in lot_schema_fields}
         lot_json["source_http_request"] = source_http_request
         lot_json["request_identifier"] = request_identifier
+        
+
 
         with open(os.path.join(property_dir, "lot.json"), "w") as f:
             json.dump(lot_json, f, indent=2)
@@ -680,7 +914,6 @@ def main():
                     street_addr = street_addr.split('#')[0].strip()
 
                 address_parts = street_addr.split()
-                print(f"Address parts for {parcel_id}:", address_parts)
                 if address_parts and address_parts[0].isdigit():
                     address_json["street_number"] = address_parts[0]
 
