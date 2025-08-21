@@ -265,7 +265,10 @@ def ensure_directory(path):
 
 
 def extract_query_params_and_base_url(url):
-    """Extract base URL and query parameters separately"""
+    """
+    Extract base URL (including hash-routing path) and query parameters.
+    Parses both regular ?query and ?query inside the fragment (after #).
+    """
     if not url or is_empty_value(url):
         return None, None
 
@@ -275,18 +278,30 @@ def extract_query_params_and_base_url(url):
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
+        # Collect params from the standard query part
+        params = {}
         if parsed.query:
-            query_dict = parse_qs(parsed.query)
-            # Convert single-item lists to single values, keep multi-item as lists
-            multi_value_query = {}
-            for key, values in query_dict.items():
-                if len(values) == 1:
-                    multi_value_query[key] = values[0]
-                else:
-                    multi_value_query[key] = values
-            return base_url, multi_value_query
-        else:
-            return base_url, {}
+            for k, v in parse_qs(parsed.query, keep_blank_values=True).items():
+                params[k] = v[0] if len(v) == 1 else v
+
+        # Include fragment in base_url; also parse ?query that might be inside the fragment
+        if parsed.fragment:
+            frag_path, _, frag_query = parsed.fragment.partition('?')
+            # Keep the path-like part of the fragment in the base URL
+            base_url = f"{base_url}#{frag_path}" if frag_path else f"{base_url}#"
+
+            if frag_query:
+                for k, v in parse_qs(frag_query, keep_blank_values=True).items():
+                    if k in params:
+                        # Merge with existing values
+                        existing = params[k] if isinstance(params[k], list) else [params[k]]
+                        merged = existing + v
+                        params[k] = merged if len(merged) > 1 else merged[0]
+                    else:
+                        params[k] = v[0] if len(v) == 1 else v
+
+        return base_url, params
+
     except Exception as e:
         logger.error(f"Error parsing URL {url}: {e}")
         return url, {}
