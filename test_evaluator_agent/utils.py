@@ -265,8 +265,10 @@ def ensure_directory(path):
 
 
 def extract_query_params_and_base_url(url):
-    """Extract base URL (including hash-routing path) and query parameters.
-       Parses both regular ?query and ?query inside the fragment (after #)."""
+    """
+    Extract base URL (including hash-routing path) and query parameters.
+    Parses both regular ?query and ?query inside the fragment (after #).
+    """
     if not url or is_empty_value(url):
         return None, None
 
