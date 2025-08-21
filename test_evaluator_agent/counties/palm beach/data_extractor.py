@@ -277,8 +277,6 @@ def main():
             property_json["number_of_units_type"] = "Three"
         elif number_of_units == 4:
             property_json["number_of_units_type"] = "Four"
-        elif number_of_units and 2 <= number_of_units <= 4:
-            property_json["number_of_units_type"] = "TwoToFour"
         
         # Set livable_floor_area - prioritize area under air, then total square feet, then livable area
         if area_under_air:

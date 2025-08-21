@@ -781,8 +781,6 @@ def extract_property_information_from_html(html_content):
             property_info['number_of_units_type'] = 'Three'
         elif living_units == 4:
             property_info['number_of_units_type'] = 'Four'
-        elif 2 <= living_units <= 4:
-            property_info['number_of_units_type'] = 'TwoToFour'
 
     # PROPERTY TYPE EXTRACTION - Priority: Model Type first, then Use Code Description
     matched_type = None
@@ -859,8 +857,6 @@ def extract_property_information_from_html(html_content):
             matched_type = '3Units'
         elif living_units == 4:
             matched_type = '4Units'
-        elif 2 <= living_units <= 4:
-            matched_type = 'TwoToFourFamily'
         elif living_units > 4:
             matched_type = 'MultipleFamily'
 
