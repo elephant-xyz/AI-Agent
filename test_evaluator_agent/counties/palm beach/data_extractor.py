@@ -3,6 +3,42 @@ import re
 import json
 import csv
 from bs4 import BeautifulSoup
+# Inline utility functions to avoid import issues
+def find_area_table(soup):
+    """
+    Find the 'SUBAREA AND SQUARE FOOTAGE' table in the HTML.
+    
+    Args:
+        soup: BeautifulSoup object of the HTML content
+        
+    Returns:
+        The area table element if found, None otherwise
+    """
+    all_h3 = soup.find_all('h3')
+    area_table = None
+    for h3 in all_h3:
+        if 'SUBAREA AND SQUARE FOOTAGE' in h3.get_text(strip=True):
+            area_table = h3
+            break
+    
+    if area_table:
+        area_table = area_table.find_next('table')
+        return area_table
+    
+    return None
+
+
+def find_structural_elements_tables(soup):
+    """
+    Find all 'structural_elements' tables in the HTML.
+    
+    Args:
+        soup: BeautifulSoup object of the HTML content
+        
+    Returns:
+        List of structural_elements table elements
+    """
+    return soup.find_all("table", class_="structural_elements")
 
 
 def clean_money(val):
@@ -73,6 +109,43 @@ def load_unnormalized_address_json():
         print("Warning: unnormalized_address.json not found")
         return {}
 
+
+def names_match(html_name, schema_name):
+    """
+    Check if two names match, accounting for order differences and variations.
+    
+    Args:
+        html_name: Name extracted from HTML
+        schema_name: Name from schema
+        
+    Returns:
+        True if names match, False otherwise
+    """
+    # Normalize both names for comparison
+    html_normalized = html_name.upper().strip()
+    schema_normalized = schema_name.upper().strip()
+    
+    # Direct match
+    if html_normalized == schema_normalized:
+        return True
+    
+    # Split names and check for order differences
+    html_parts = html_normalized.split()
+    schema_parts = schema_normalized.split()
+    
+    if len(html_parts) == 2 and len(schema_parts) == 2:
+        # Check if names are in different order
+        if (html_parts[0] == schema_parts[1] and 
+            html_parts[1] == schema_parts[0]):
+            return True
+        
+        # Check if one is a subset of the other
+        if (html_parts[0] in schema_parts and 
+            html_parts[1] in schema_parts):
+            return True
+    
+    return False
+
 def main():
     # Load owner and structure data
     with open("./owners/owners_schema.json") as f:
@@ -138,7 +211,7 @@ def main():
             property_json["subdivision"] = cleaned_subdiv
         
         # Extract zoning from structural_elements table
-        struct_tables = soup.find_all("table", class_="structural_elements")
+        struct_tables = find_structural_elements_tables(soup)
         for struct_table in struct_tables:
             rows = struct_table.find_all("tr")
             for row in rows:
@@ -161,16 +234,8 @@ def main():
         livable_area = None
         
         # First check SUBAREA AND SQUARE FOOTAGE table for Area Under Air
-        all_h3 = soup.find_all('h3')
-        area_table = None
-        for h3 in all_h3:
-            if 'SUBAREA AND SQUARE FOOTAGE' in h3.get_text(strip=True):
-                area_table = h3
-                break
-        
+        area_table = find_area_table(soup)
         if area_table:
-            area_table = area_table.find_next('table')
-            if area_table:
                 for row in area_table.find_all('tr'):
                     cells = row.find_all('td')
                     if len(cells) >= 2:
@@ -186,7 +251,7 @@ def main():
                             area_under_air = sqft
         
         # Then check structural_elements table for other values
-        struct_tables = soup.find_all("table", class_="structural_elements")
+        struct_tables = find_structural_elements_tables(soup)
         for struct_table in struct_tables:
             rows = struct_table.find_all("tr")
             for row in rows:
@@ -252,7 +317,7 @@ def main():
                 property_json["property_type"] = "SingleFamily"
                 property_type_set = True
             elif "duplex" in val:
-                property_json["property_type"] = "Duplex"
+                property_json["property_type"] = "2Units"
                 property_type_set = True
             elif "cooperative" in val:
                 property_json["property_type"] = "Cooperative"
@@ -260,7 +325,7 @@ def main():
         # If not set, try to extract from Property Use Code
         if not property_type_set:
             # Find "Property Use Code" in structural_elements tables
-            for struct_table in soup.find_all("table", class_="structural_elements"):
+            for struct_table in find_structural_elements_tables(soup):
                 rows = struct_table.find_all("tr")
                 for row in rows:
                     tds = row.find_all("td")
@@ -276,7 +341,7 @@ def main():
                             elif "single family" in val:
                                 property_json["property_type"] = "SingleFamily"
                             elif "duplex" in val:
-                                property_json["property_type"] = "Duplex"
+                                property_json["property_type"] = "2Units"
                             elif "cooperative" in val:
                                 property_json["property_type"] = "Cooperative"
                             elif "0400" in val:
@@ -284,9 +349,9 @@ def main():
                             elif "0100" in val:
                                 property_json["property_type"] = "SingleFamily"
                             elif "0200" in val:
-                                property_json["property_type"] = "Duplex"
+                                property_json["property_type"] = "2Units"
                             elif "0300" in val:
-                                property_json["property_type"] = "Triplex"
+                                property_json["property_type"] = "3Units"
                             elif "0500" in val:
                                 property_json["property_type"] = "Townhouse"
                             else:
@@ -488,203 +553,146 @@ def main():
                         with open(os.path.join(property_dir, f"company_{i + 1}_{company_count}.json"), "w") as f:
                             json.dump(company_json, f, indent=2)
 
-        # --- MAILING ADDRESSES ---
-        mailing_addresses = []
-        print(f"Processing mailing addresses for parcel: {parcel_id}")
-        
+                # --- MAILING ADDRESSES ---
         # Find the owner information section
         owner_sections = soup.find_all("h2", string=re.compile("Owner INFORMATION", re.I))
         if owner_sections:
             owner_section = owner_sections[0]
-            print(f"Found owner section for {parcel_id}")
             # Find the table with mailing addresses
             mailing_table = owner_section.find_next("table")
             if mailing_table:
                 rows = mailing_table.find_all("tr")[1:]  # Skip header row
-                print(f"Found {len(rows)} owner rows for {parcel_id}")
-                for row_idx, row in enumerate(rows):
-                    cols = row.find_all("td")
+                if rows:
+                    # Extract mailing address from first row (assuming all owners share the same mailing address)
+                    first_row = rows[0]
+                    cols = first_row.find_all("td")
                     if len(cols) >= 3:
-                        # Extract owner names from first column
-                        owner_spans = cols[0].find_all("span")
-                        owner_names = []
-                        for span in owner_spans:
-                            name = span.text.strip()
-                            if name:
-                                # Clean HTML entities and extra characters
-                                name = name.replace("&amp;", "&").replace("&", "&").strip()
-                                # Remove trailing punctuation like "&" if it's not part of the name
-                                if name.endswith(" &") and len(name) > 2:
-                                    name = name[:-2].strip()
-                                owner_names.append(name)
-                        
-                        print(f"Cleaned owner names: {owner_names}")
-                        
                         # Extract mailing address from third column
                         mailing_address_cell = cols[2]
                         if mailing_address_cell:
                             # Get all text content and clean it up
                             mailing_text = " ".join(mailing_address_cell.get_text().split())
                             if mailing_text and mailing_text.strip():
-                                mailing_addresses.append({
-                                    "owners": owner_names,
-                                    "address": mailing_text.strip(),
-                                    "row_index": row_idx
-                                })
-                                print(f"Extracted mailing address for {owner_names}: {mailing_text.strip()}")
-        else:
-            print(f"No owner section found for {parcel_id}")
-        
-        print(f"Total mailing addresses found: {len(mailing_addresses)}")
-
-        # Create mailing address JSON files and relationships
-        for addr_idx, addr_info in enumerate(mailing_addresses):
-            # Create mailing address JSON
-            mailing_address_json = {
-                "source_http_request": source_http_request,
-                "request_identifier": f"{request_identifier}_mailing_address_{addr_idx + 1}",
-                "city_name": None,
-                "country_code": "US",
-                "county_name": "PALM BEACH",
-                "latitude": None,
-                "longitude": None,
-                "plus_four_postal_code": None,
-                "postal_code": None,
-                "state_code": None,
-                "street_name": None,
-                "street_post_directional_text": None,
-                "street_pre_directional_text": None,
-                "street_number": None,
-                "street_suffix_type": None,
-                "unit_identifier": None,
-                "route_number": None,
-                "township": None,
-                "range": None,
-                "section": None,
-                "block": None
-            }
-            
-            # Parse the mailing address
-            addr_parts = addr_info["address"].split(',')
-            if len(addr_parts) >= 1:
-                # Parse street address
-                street_addr = addr_parts[0].strip()
-                street_parts = street_addr.split()
-                if street_parts and street_parts[0].isdigit():
-                    mailing_address_json["street_number"] = street_parts[0]
-                    # Extract street name (everything after street number)
-                    street_name_parts = street_parts[1:]
-                    if street_name_parts:
-                        # Handle street suffix
-                        suffix_map = {
-                            "AVE": "Ave", "ST": "St", "DR": "Dr", "LN": "Ln", "RD": "Rd", "CT": "Ct",
-                            "PL": "Pl", "WAY": "Way", "CIR": "Cir", "PKWY": "Pkwy", "BLVD": "Blvd"
-                        }
-                        last_part = street_name_parts[-1].upper()
-                        if last_part in suffix_map:
-                            mailing_address_json["street_suffix_type"] = suffix_map[last_part]
-                            street_name_parts = street_name_parts[:-1]
-                        
-                        mailing_address_json["street_name"] = " ".join(street_name_parts)
-            
-            # Parse city, state, zip
-            if len(addr_parts) >= 2:
-                city_state_zip = addr_parts[1].strip()
-                parts = city_state_zip.split()
-                if len(parts) >= 2:
-                    # Last part is usually the zip code
-                    zip_part = parts[-1]
-                    if zip_part.isdigit() and len(zip_part) >= 5:
-                        mailing_address_json["postal_code"] = zip_part[:5]
-                        if len(zip_part) > 5:
-                            mailing_address_json["plus_four_postal_code"] = zip_part[5:9]
-                    
-                    # Second to last part is usually the state
-                    if len(parts) >= 2:
-                        state_part = parts[-2]
-                        if len(state_part) == 2:
-                            mailing_address_json["state_code"] = state_part.upper()
-                    
-                    # Everything before state/zip is the city
-                    city_parts = parts[:-2] if len(parts) >= 2 else parts[:-1]
-                    if city_parts:
-                        mailing_address_json["city_name"] = " ".join(city_parts).upper()
-            
-            # Save mailing address JSON
-            with open(os.path.join(property_dir, f"mailing_address_{addr_idx + 1}.json"), "w") as f:
-                json.dump(mailing_address_json, f, indent=2)
-            
-            # Create person_has_mailing_address relationships for each owner
-            # Only create relationships for persons who actually have this mailing address
-            print(f"Looking for relationships for mailing address {addr_idx + 1}")
-            print(f"Owner names from HTML: {addr_info['owners']}")
-            
-            for owner_name in addr_info["owners"]:
-                print(f"Processing owner: '{owner_name}'")
-                if parcel_id in owners_schema:
-                    owners_by_date = owners_schema[parcel_id]["owners_by_date"]
-                    print(f"Found owners schema with {len(owners_by_date)} sale periods")
-                    for i, (date, owners) in enumerate(owners_by_date.items()):
-                        print(f"Checking sale period {i + 1} with {len(owners)} owners")
-                        person_count = 0
-                        seen_persons = set()
-                        for j, owner in enumerate(owners):
-                            if owner["type"] == "person":
-                                person_key = (owner.get("first_name"), owner.get("last_name"), owner.get("middle_name"))
-                                if person_key in seen_persons:
-                                    continue
-                                seen_persons.add(person_key)
-                                person_count += 1
+                                # Create single mailing address JSON (like Lee County)
+                                mailing_address_json = {
+                                    "source_http_request": source_http_request,
+                                    "request_identifier": f"{request_identifier}_mailing_address_1",
+                                    "city_name": None,
+                                    "country_code": "US",
+                                    "county_name": "PALM BEACH",
+                                    "latitude": None,
+                                    "longitude": None,
+                                    "plus_four_postal_code": None,
+                                    "postal_code": None,
+                                    "state_code": None,
+                                    "street_name": None,
+                                    "street_post_directional_text": None,
+                                    "street_pre_directional_text": None,
+                                    "street_number": None,
+                                    "street_suffix_type": None,
+                                    "unit_identifier": None,
+                                    "route_number": None,
+                                    "township": None,
+                                    "range": None,
+                                    "section": None,
+                                    "block": None
+                                }
                                 
-                                # Check if this person matches the owner name from the mailing address
-                                full_name = f"{owner.get('first_name', '')} {owner.get('last_name', '')}".strip()
-                                print(f"Comparing: HTML owner '{owner_name}' vs schema person '{full_name}'")
+                                # Parse the mailing address
+                                addr_parts = mailing_text.split(',')
+                                if len(addr_parts) >= 1:
+                                    # Parse street address
+                                    street_addr = addr_parts[0].strip()
+                                    street_parts = street_addr.split()
+                                    if street_parts and street_parts[0].isdigit():
+                                        mailing_address_json["street_number"] = street_parts[0]
+                                        # Extract street name (everything after street number)
+                                        street_name_parts = street_parts[1:]
+                                        if street_name_parts:
+                                            # Handle street suffix
+                                            suffix_map = {
+                                                "AVE": "Ave", "ST": "St", "DR": "Dr", "LN": "Ln", "RD": "Rd", "CT": "Ct",
+                                                "PL": "Pl", "WAY": "Way", "CIR": "Cir", "PKWY": "Pkwy", "BLVD": "Blvd"
+                                            }
+                                            last_part = street_name_parts[-1].upper()
+                                            if last_part in suffix_map:
+                                                mailing_address_json["street_suffix_type"] = suffix_map[last_part]
+                                                street_name_parts = street_name_parts[:-1]
+                                            
+                                            mailing_address_json["street_name"] = " ".join(street_name_parts)
                                 
-                                # Improved name matching logic
-                                def names_match(html_name, schema_name):
-                                    # Normalize both names for comparison
-                                    html_normalized = html_name.upper().strip()
-                                    schema_normalized = schema_name.upper().strip()
-                                    
-                                    # Direct match
-                                    if html_normalized == schema_normalized:
-                                        return True
-                                    
-                                    # Split names and check for order differences
-                                    html_parts = html_normalized.split()
-                                    schema_parts = schema_normalized.split()
-                                    
-                                    if len(html_parts) == 2 and len(schema_parts) == 2:
-                                        # Check if names are in different order
-                                        if (html_parts[0] == schema_parts[1] and 
-                                            html_parts[1] == schema_parts[0]):
-                                            return True
+                                # Parse city, state, zip
+                                if len(addr_parts) >= 2:
+                                    city_state_zip = addr_parts[1].strip()
+                                    parts = city_state_zip.split()
+                                    if len(parts) >= 2:
+                                        # Last part is usually the zip code
+                                        zip_part = parts[-1]
+                                        if zip_part.isdigit() and len(zip_part) >= 5:
+                                            mailing_address_json["postal_code"] = zip_part[:5]
+                                            if len(zip_part) > 5:
+                                                mailing_address_json["plus_four_postal_code"] = zip_part[5:9]
                                         
-                                        # Check if one is a subset of the other
-                                        if (html_parts[0] in schema_parts and 
-                                            html_parts[1] in schema_parts):
-                                            return True
-                                    
-                                    return False
+                                        # Second to last part is usually the state
+                                        if len(parts) >= 2:
+                                            state_part = parts[-2]
+                                            if len(state_part) == 2:
+                                                mailing_address_json["state_code"] = state_part.upper()
+                                        
+                                        # Everything before state/zip is the city
+                                        city_parts = parts[:-2] if len(parts) >= 2 else parts[:-1]
+                                        if city_parts:
+                                            mailing_address_json["city_name"] = " ".join(city_parts).upper()
                                 
-                                if names_match(owner_name, full_name):
-                                    print(f"MATCH FOUND! Creating relationship for {full_name}")
-                                    # Create relationship only for this specific person
-                                    rel = {
-                                        "to": {"/": f"./mailing_address_{addr_idx + 1}.json"},
-                                        "from": {"/": f"./person_{i + 1}_{person_count}.json"}
-                                    }
-                                    rel_filename = f"relationship_person_has_mailing_address_{i + 1}_{person_count}_{addr_idx + 1}.json"
-                                    with open(os.path.join(property_dir, rel_filename), "w") as f:
-                                        json.dump(rel, f, indent=2)
-                                    print(f"Created relationship: {rel_filename}")
-                                    break
-                                else:
-                                    print(f"No match for {full_name}")
-                            else:
-                                print(f"Skipping non-person owner: {owner}")
-                else:
-                    print(f"No owners schema found for {parcel_id}")
+                                # Save single mailing address JSON
+                                with open(os.path.join(property_dir, "mailing_address_1.json"), "w") as f:
+                                    json.dump(mailing_address_json, f, indent=2)
+                                
+                                # Extract owner names from all rows and create relationships
+                                for row_idx, row in enumerate(rows):
+                                    cols = row.find_all("td")
+                                    if len(cols) >= 3:
+                                        # Extract owner names from first column
+                                        owner_spans = cols[0].find_all("span")
+                                        owner_names = []
+                                        for span in owner_spans:
+                                            name = span.text.strip()
+                                            if name:
+                                                # Clean HTML entities and extra characters
+                                                name = name.replace("&amp;", "&").strip()
+                                                # Remove trailing punctuation like "&" if it's not part of the name
+                                                if name.endswith(" &") and len(name) > 2:
+                                                    name = name[:-2].strip()
+                                                owner_names.append(name)
+                                        
+                                        # Create person_has_mailing_address relationships for each owner
+                                        for owner_name in owner_names:
+                                            if parcel_id in owners_schema:
+                                                owners_by_date = owners_schema[parcel_id]["owners_by_date"]
+                                                for i, (date, owners) in enumerate(owners_by_date.items()):
+                                                    person_count = 0
+                                                    seen_persons = set()
+                                                    for j, owner in enumerate(owners):
+                                                        if owner["type"] == "person":
+                                                            person_key = (owner.get("first_name"), owner.get("last_name"), owner.get("middle_name"))
+                                                            if person_key in seen_persons:
+                                                                continue
+                                                            seen_persons.add(person_key)
+                                                            person_count += 1
+                                                            
+                                                            # Check if this person matches the owner name from the mailing address
+                                                            full_name = f"{owner.get('first_name', '')} {owner.get('last_name', '')}".strip()
+                                                            
+                                                            if names_match(owner_name, full_name):
+                                                                # Create relationship to the single mailing address
+                                                                rel = {
+                                                                    "to": {"/": "./mailing_address_1.json"},
+                                                                    "from": {"/": f"./person_{i + 1}_{person_count}.json"}
+                                                                }
+                                                                rel_filename = f"relationship_person_has_mailing_address_{i + 1}_{person_count}_1.json"
+                                                                with open(os.path.join(property_dir, rel_filename), "w") as f:
+                                                                    json.dump(rel, f, indent=2)
+                                                                break
 
         # --- RELATIONSHIP FILES ---
         if parcel_id in owners_schema:
@@ -764,7 +772,7 @@ def main():
         bedroom_count = 0
         bathroom_count = 0
         half_bath_count = 0
-        struct_tables = soup.find_all("table", class_="structural_elements")
+        struct_tables = find_structural_elements_tables(soup)
         for struct_table in struct_tables:
             rows = struct_table.find_all("tr")
             for row in rows:
@@ -908,7 +916,6 @@ def main():
                     street_addr = street_addr.split('#')[0].strip()
 
                 address_parts = street_addr.split()
-                print(f"Address parts for {parcel_id}:", address_parts)
                 if address_parts and address_parts[0].isdigit():
                     address_json["street_number"] = address_parts[0]
 

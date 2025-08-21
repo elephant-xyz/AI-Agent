@@ -804,11 +804,11 @@ def extract_property_information_from_html(html_content):
         elif any(keyword in type_text for keyword in ['single family', 'single-family']):
             matched = 'SingleFamily'
         elif 'duplex' in type_text or '2 unit' in type_text or 'two unit' in type_text:
-            matched = 'Duplex'
+            matched = '2Units'
         elif 'triplex' in type_text or '3 unit' in type_text or 'three unit' in type_text:
-            matched = 'Triplex'
+            matched = '3Units'
         elif 'fourplex' in type_text or '4 unit' in type_text or 'four unit' in type_text:
-            matched = 'Fourplex'
+            matched = '4Units'
         elif any(keyword in type_text for keyword in ['townhouse', 'town house', 'townhome']):
             matched = 'Townhouse'
         elif 'condominium' in type_text or 'condo' in type_text:
@@ -836,7 +836,7 @@ def extract_property_information_from_html(html_content):
         elif any(keyword in type_text for keyword in ['multiple family', 'multi family', 'apartment', 'multi-family']):
             matched = 'MultipleFamily'
         elif any(keyword in type_text for keyword in ['two to four', '2 to 4', '2-4']):
-            matched = 'MultipleFamily'
+            matched = 'TwoToFourFamily'
 
         return matched, raw_value
 
@@ -854,13 +854,13 @@ def extract_property_information_from_html(html_content):
         if living_units == 1:
             matched_type = 'SingleFamily'
         elif living_units == 2:
-            matched_type = 'Duplex'
+            matched_type = '2Units'
         elif living_units == 3:
-            matched_type = 'Triplex'
+            matched_type = '3Units'
         elif living_units == 4:
-            matched_type = 'Fourplex'
+            matched_type = '4Units'
         elif 2 <= living_units <= 4:
-            matched_type = 'MultipleFamily'
+            matched_type = 'TwoToFourFamily'
         elif living_units > 4:
             matched_type = 'MultipleFamily'
 
