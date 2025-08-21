@@ -105,7 +105,7 @@ def extract_layout_from_html(html, file_id, source_http_request=None):
             _add_layout(layouts, file_id, BEDROOM_ENUM, source_http_request, is_exterior=False)
 
     # Full Baths
-    full_bath = soup.find(string=re.compile(r'\b(Full Bath|No of Bath\(s\)|No of Bath)\b', re.I))
+    full_bath = soup.find(string=re.compile(r'\b(Full Baths?|No of Bath\(s\)|No of Bath)\b', re.I))
     if full_bath:
         try:
             val = full_bath.find_parent('tr').find_all('td')[-1].get_text(strip=True)
@@ -116,7 +116,7 @@ def extract_layout_from_html(html, file_id, source_http_request=None):
             _add_layout(layouts, file_id, FULL_BATH_ENUM, source_http_request, is_exterior=False)
 
     # Half Baths
-    half_bath = soup.find(string=re.compile(r'\b(Half Bath|No of Half Bath\(s\))\b', re.I))
+    half_bath = soup.find(string=re.compile(r'\b(Half Baths?|No of Half Bath\(s\))\b', re.I))
     if half_bath:
         try:
             val = half_bath.find_parent('tr').find_all('td')[-1].get_text(strip=True)
